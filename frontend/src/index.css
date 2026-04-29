@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  background-color: #080c14;
+  color: #b0c4d8;
+  font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Scrollbar global (4px, arrondie) ── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: #111; border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #666; }
+* { scrollbar-width: thin; scrollbar-color: #444 #111; }
+
+/* ── Chat messages zone : scrollbar ultra fine 3px ── */
+.chat-messages::-webkit-scrollbar { width: 3px; }
+.chat-messages::-webkit-scrollbar-track { background: transparent; }
+.chat-messages::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+.chat-messages::-webkit-scrollbar-thumb:hover { background: #555; }
+
+/* ── Card baseline ── */
+.card {
+  background: #0f1929;
+  border: 1px solid #1a2535;
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+/* ── Price flash animations ── */
+@keyframes flash-up {
+  0%   { color: #22c55e; text-shadow: 0 0 12px rgba(34,197,94,0.6); }
+  60%  { color: #4ade80; }
+  100% { color: #f5c842; }
+}
+@keyframes flash-down {
+  0%   { color: #ef4444; text-shadow: 0 0 12px rgba(239,68,68,0.5); }
+  60%  { color: #f87171; }
+  100% { color: #f5c842; }
+}
+.price-flash-up   { animation: flash-up   0.9s ease-out forwards; }
+.price-flash-down { animation: flash-down 0.9s ease-out forwards; }
+
+/* ── Subtle animations ── */
+@keyframes pulse-gold {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+.animate-pulse-gold { animation: pulse-gold 2s ease-in-out infinite; }
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+.animate-blink { animation: blink 1s step-end infinite; }
+
+/* ── Tooltip ── */
+.tooltip-container { position: relative; display: inline-flex; align-items: center; }
+.tooltip-content {
+  position: absolute;
+  z-index: 100;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 220px;
+  padding: 8px 10px;
+  background: #1a2535;
+  border: 1px solid #2d3f57;
+  border-radius: 6px;
+  color: #b0c4d8;
+  font-size: 11px;
+  line-height: 1.5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  white-space: normal;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.tooltip-content::before {
+  content: '';
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 5px solid transparent;
+  border-right-color: #2d3f57;
+}
+.tooltip-container:hover .tooltip-content { opacity: 1; }
+
+/* ── Separator ── */
+.section-divider { border-top: 1px solid #1a2535; margin: 12px 0; }
