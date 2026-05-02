@@ -1,10 +1,12 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional
 from backend.database import (
     save_trade, update_trade, delete_trade,
     get_trades, get_trade_by_id, get_trade_stats,
     get_closed_trades_for_learning,
+    get_trade_stats_detailed, export_trades_csv,
 )
 
 router = APIRouter(prefix="/api/journal", tags=["journal"])
@@ -82,6 +84,23 @@ def remove_trade(trade_id: int):
 @router.get("/stats")
 def journal_stats():
     return get_trade_stats()
+
+
+@router.get("/stats/detailed")
+def journal_stats_detailed():
+    """Extended stats: by session, by day-of-week, by trade score, current streak."""
+    return get_trade_stats_detailed()
+
+
+@router.get("/export/csv")
+def export_csv():
+    """Export all trades as a CSV file."""
+    csv_data = export_trades_csv()
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=xauusd_trades.csv"},
+    )
 
 
 @router.post("/trades/{trade_id}/analyze")

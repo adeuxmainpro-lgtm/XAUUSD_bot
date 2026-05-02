@@ -10,14 +10,14 @@ FRED_API_KEY = os.getenv("FRED_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-CLAUDE_MODEL = "claude-sonnet-4-6"
+CLAUDE_MODEL = "claude-opus-4-6"
 
 TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
 FRED_BASE_URL = "https://api.stlouisfed.org/fred"
 
 ANALYSIS_INTERVAL_MIN = 60       # analyse IA toutes les heures
-PRICE_REFRESH_INTERVAL_MIN = 15  # prix toutes les 15 min
-NEWS_REFRESH_INTERVAL_MIN = 240  # news toutes les 4h
+PRICE_REFRESH_INTERVAL_MIN = 10  # indicateurs toutes les 10 min
+NEWS_REFRESH_INTERVAL_MIN = 60   # news toutes les 1h
 
 VOLATILITY_ALERT_THRESHOLD = 0.8  # ATR% > 0.8% → alerte
 

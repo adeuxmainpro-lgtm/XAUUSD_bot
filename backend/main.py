@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from backend.database import init_db
 from backend.scheduler import start_scheduler
 from backend.routers import market, analysis, news, chat, risk
-from backend.routers import journal, patterns, sentiment, macro
+from backend.routers import journal, patterns, sentiment, macro, performance
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,6 +61,7 @@ app.include_router(journal.router)
 app.include_router(patterns.router)
 app.include_router(sentiment.router)
 app.include_router(macro.router)
+app.include_router(performance.router)
 
 
 @app.get("/")

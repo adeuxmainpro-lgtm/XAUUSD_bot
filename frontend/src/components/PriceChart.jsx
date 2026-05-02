@@ -127,7 +127,7 @@ export default function PriceChart({ indicators }) {
     setLoading(true)
     setChartError(null)
     try {
-      const res  = await getOHLC(interval, 200)
+      const res  = await getOHLC(interval, 500)
       const ohlc = res.data || []
       if (res.source) setDataSource(res.source)
 
@@ -136,17 +136,32 @@ export default function PriceChart({ indicators }) {
         return
       }
 
+      // Normalize datetime: handle both "2025-03-15 10:00:00" and "2025-03-15T10:00:00"
+      const parseTime = (str) => Math.floor(new Date(str.replace(' ', 'T')).getTime() / 1000)
+
+      const seen = new Set()
       const data = ohlc
         .map(d => ({
-          time:  Math.floor(new Date(d.datetime).getTime() / 1000),
+          time:  parseTime(d.datetime),
           open:  d.open,
           high:  d.high,
           low:   d.low,
           close: d.close,
         }))
+        .filter(d => !isNaN(d.time))           // drop invalid timestamps
         .sort((a, b) => a.time - b.time)
+        .filter(d => {                          // drop duplicate timestamps
+          if (seen.has(d.time)) return false
+          seen.add(d.time)
+          return true
+        })
 
-      if (candleSeries.current && data.length > 0) {
+      if (data.length === 0) {
+        setChartError('Données OHLC invalides — timestamps non parsables.')
+        return
+      }
+
+      if (candleSeries.current) {
         candleSeries.current.setData(data)
         setCandles(data.length)
       }
@@ -226,7 +241,7 @@ export default function PriceChart({ indicators }) {
             </button>
           </div>
         )}
-        <div ref={chartRef} className="w-full" />
+        <div ref={chartRef} className="w-full" style={{ height: '500px' }} />
       </div>
 
       {/* Data source indicator */}

@@ -2,9 +2,13 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from backend.services.ai_analyst import run_analysis
 from backend.database import get_latest_analysis, get_recent_analyses
 import logging
+import time
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 logger = logging.getLogger(__name__)
+
+_composite_cache: dict = {}
+_COMPOSITE_TTL = 3600
 
 _running = False
 
@@ -58,3 +62,26 @@ async def get_signal_history(limit: int = 5):
 async def get_status():
     """Statut de l'analyse en cours."""
     return {"running": _running}
+
+
+@router.get("/composite")
+async def get_composite_score(refresh: bool = False):
+    """Composite 100-point score: correlations, ETF flows, options, yields, Fed NLP."""
+    global _composite_cache
+    now = time.time()
+    if not refresh and _composite_cache.get("ts") and now - _composite_cache["ts"] < _COMPOSITE_TTL:
+        return _composite_cache["data"]
+
+    try:
+        from backend.services.analysis_engine import build_market_context
+        ctx = await build_market_context()
+        payload = {
+            "composite":   ctx.get("composite", {}),
+            "new_sources": ctx.get("new_sources", {}),
+            "confluence":  ctx.get("confluence", {}),
+        }
+        _composite_cache = {"ts": now, "data": payload}
+        return payload
+    except Exception as e:
+        logger.error(f"Composite score endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

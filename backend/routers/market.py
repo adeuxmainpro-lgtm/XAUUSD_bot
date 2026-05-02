@@ -1,5 +1,8 @@
 from fastapi import APIRouter, HTTPException
-from backend.services.market_data import get_full_market_data, fetch_ohlc, fetch_current_price, get_active_source
+from backend.services.market_data import (
+    get_full_market_data, fetch_ohlc, fetch_current_price,
+    get_active_source, fetch_api_quota,
+)
 from backend.database import get_latest_snapshot, save_market_snapshot
 import logging
 import time
@@ -33,10 +36,16 @@ async def get_price():
         "macd": data.get("macd"),
         "macd_signal": data.get("macd_signal"),
         "macd_histogram": data.get("macd_histogram"),
+        "ema20": data.get("ema20"),
+        "ema50": data.get("ema50"),
+        "ema200": data.get("ema200"),
         "trend_short": data.get("trend_short"),
         "trend_medium": data.get("trend_medium"),
         "atr": data.get("atr"),
         "atr_pct": data.get("atr_pct"),
+        "bb_upper": data.get("bb_upper"),
+        "bb_mid": data.get("bb_mid"),
+        "bb_lower": data.get("bb_lower"),
         "supports": data.get("supports", []),
         "resistances": data.get("resistances", []),
         "source": data.get("source", "twelve_data"),
@@ -90,6 +99,12 @@ async def get_indicators():
         data = await get_full_market_data()
         return data
     return snapshot
+
+
+@router.get("/quota")
+async def get_quota():
+    """Twelve Data API quota/usage info."""
+    return await fetch_api_quota()
 
 
 def _compute_change(current: float | None, open_: float | None) -> float | None:

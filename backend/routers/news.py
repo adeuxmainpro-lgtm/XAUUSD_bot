@@ -11,15 +11,15 @@ logger = logging.getLogger(__name__)
 async def get_news(refresh: bool = False):
     """Retourne les actualités. refresh=true force la mise à jour via Claude."""
     if refresh:
-        articles = await fetch_gold_news()
-        save_news(articles)
-        return {"source": "fresh", "articles": articles}
+        result = await fetch_gold_news()
+        save_news(result["articles"])
+        return {"source": "fresh", "articles": result["articles"], "stats": result.get("stats")}
 
     cached = get_latest_news()
     if cached:
         return {"source": "cache", "articles": cached}
 
     # Pas de cache → fetch
-    articles = await fetch_gold_news()
-    save_news(articles)
-    return {"source": "fresh", "articles": articles}
+    result = await fetch_gold_news()
+    save_news(result["articles"])
+    return {"source": "fresh", "articles": result["articles"], "stats": result.get("stats")}

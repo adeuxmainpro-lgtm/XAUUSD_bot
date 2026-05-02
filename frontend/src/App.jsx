@@ -9,13 +9,18 @@ import PatternPanel from './components/PatternPanel'
 import SentimentPanel from './components/SentimentPanel'
 import MacroPanel from './components/MacroPanel'
 import TradeJournal from './components/TradeJournal'
-import { getPrice, getLivePrice, getLatestAnalysis, getNews, runAnalysis } from './services/api'
+import PerformancePanel from './components/PerformancePanel'
+import BacktestPanel from './components/BacktestPanel'
 
-const REFRESH_INTERVAL_MS = 60_000
+import { getPrice, getLivePrice, getLatestAnalysis, getNews, runAnalysis, getQuota } from './services/api'
+
+const REFRESH_INTERVAL_MS = 600_000
 
 const TABS = [
-  { id: 'dashboard', label: 'Dashboard' },
-  { id: 'journal',   label: 'Journal de Trades' },
+  { id: 'dashboard',    label: 'Dashboard' },
+  { id: 'journal',      label: 'Journal de Trades' },
+  { id: 'performance',  label: 'Performances ML' },
+  { id: 'backtest',     label: 'Backtesting' },
 ]
 
 function PriceDot({ isUp, isDown }) {
@@ -23,7 +28,7 @@ function PriceDot({ isUp, isDown }) {
   return <span className={`w-2 h-2 rounded-full ${color} animate-pulse inline-block`} />
 }
 
-function Header({ price, changePct, priceKey, flashClass, loading, activeTab, onTabChange }) {
+function Header({ price, changePct, priceKey, flashClass, loading, activeTab, onTabChange, quota }) {
   const isUp   = changePct > 0
   const isDown = changePct < 0
 
@@ -61,13 +66,22 @@ function Header({ price, changePct, priceKey, flashClass, loading, activeTab, on
               </div>
             ) : null}
 
-            <div className="hidden md:flex flex-col items-end">
+            <div className="hidden md:flex flex-col items-end gap-0.5">
               <div className="text-[10px] text-terminal-text-dim">
                 {new Date().toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}
               </div>
               <div className="text-[10px] text-terminal-text-dim">
                 {new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
               </div>
+              {quota && !quota.error && (
+                <div className={`text-[9px] font-mono px-1 rounded ${
+                  quota.remaining < 100 ? 'text-red-400 bg-red-900/20' :
+                  quota.remaining < 300 ? 'text-yellow-400 bg-yellow-900/20' :
+                  'text-terminal-text-dim'
+                }`}>
+                  API {quota.remaining}/{quota.plan_daily_limit}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -98,12 +112,14 @@ export default function App() {
   const [marketData,      setMarketData]       = useState(null)
   const [analysis,        setAnalysis]         = useState(null)
   const [news,            setNews]             = useState([])
+  const [newsStats,       setNewsStats]        = useState(null)
   const [loadingMarket,   setLoadingMarket]    = useState(true)
   const [loadingAnalysis, setLoadingAnalysis]  = useState(false)
   const [loadingNews,     setLoadingNews]      = useState(false)
   const [flashClass,      setFlashClass]       = useState('')
   const [priceKey,        setPriceKey]         = useState(0)
   const [marketError,     setMarketError]      = useState(null)
+  const [quota,           setQuota]            = useState(null)
   const prevPriceRef = useRef(null)
 
   const fetchMarket = useCallback(async () => {
@@ -134,6 +150,7 @@ export default function App() {
     try {
       const data = await getNews(refresh)
       setNews(data.articles || [])
+      if (data.stats) setNewsStats(data.stats)
     } catch (e) {
       console.error('News fetch error:', e)
     } finally {
@@ -172,6 +189,7 @@ export default function App() {
     fetchMarket()
     fetchAnalysis()
     fetchNews()
+    getQuota().then(d => setQuota(d)).catch(() => {})
   }, [])
 
   // Full market data (indicators) every 60s
@@ -192,7 +210,7 @@ export default function App() {
       } catch {
         // keep last known value on error
       }
-    }, 1000)
+    }, 30_000)
     return () => clearInterval(id)
   }, [])
 
@@ -206,6 +224,7 @@ export default function App() {
         loading={loadingMarket}
         activeTab={activeTab}
         onTabChange={setActiveTab}
+        quota={quota}
       />
 
       {activeTab === 'dashboard' && (
@@ -254,6 +273,7 @@ export default function App() {
               />
               <NewsPanel
                 articles={news}
+                stats={newsStats}
                 onRefresh={fetchNews}
                 loading={loadingNews}
               />
@@ -265,6 +285,30 @@ export default function App() {
       )}
 
       {activeTab === 'journal' && <TradeJournal />}
+
+      {activeTab === 'performance' && (
+        <main className="max-w-[1800px] mx-auto px-4 py-6">
+          <div className="mb-4">
+            <h2 className="text-sm font-bold text-terminal-base">Performances ML — Analyse des trades fermés</h2>
+            <p className="text-[11px] text-terminal-text-dim mt-0.5">
+              Win rate par session, direction, RSI, Wyckoff et ajustements automatiques des poids.
+            </p>
+          </div>
+          <PerformancePanel />
+        </main>
+      )}
+
+      {activeTab === 'backtest' && (
+        <main className="max-w-[1800px] mx-auto px-4 py-6">
+          <div className="mb-4">
+            <h2 className="text-sm font-bold text-terminal-base">Backtesting XAUUSD</h2>
+            <p className="text-[11px] text-terminal-text-dim mt-0.5">
+              Simulation historique de la stratégie sur données journalières — Sharpe, profit factor, max drawdown.
+            </p>
+          </div>
+          <BacktestPanel />
+        </main>
+      )}
 
       <footer className="text-center py-4 text-[10px] text-terminal-text-dim border-t border-terminal-border mt-4">
         XAUUSD Trading Bot · Claude AI · Twelve Data + FRED + COT + RSS

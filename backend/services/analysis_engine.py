@@ -3,8 +3,14 @@ import asyncio
 from backend.services.market_data import get_full_market_data
 from backend.services.macro_data import get_macro_context
 from backend.services.pattern_service import detect_all_patterns
-from backend.services.sentiment_service import fetch_fear_greed, compute_confluence
+from backend.services.sentiment_service import fetch_fear_greed, compute_confluence, compute_composite_score
 from backend.services.signal_engine import evaluate_signal
+from backend.services.new_sources_service import fetch_all_new_sources
+from backend.services.smc_engine import (
+    analyze_mtf, detect_kill_zone, detect_liquidity_sweep,
+    detect_wyckoff_phase, detect_rsi_divergence, compute_trade_score,
+)
+from backend.services.regime_detector import detect_regime
 from backend.database import get_latest_news, get_latest_cot, get_latest_sentiment, get_closed_trades_for_learning
 
 logger = logging.getLogger(__name__)
@@ -12,10 +18,11 @@ logger = logging.getLogger(__name__)
 
 async def build_market_context() -> dict:
     """Assemble full market context: price, macro, news, patterns, COT, sentiment, trade history."""
-    market, macro, fg = await asyncio.gather(
+    market, macro, fg, new_sources = await asyncio.gather(
         get_full_market_data(),
         get_macro_context(),
         fetch_fear_greed(),
+        fetch_all_new_sources(),
         return_exceptions=True,
     )
 
@@ -28,10 +35,17 @@ async def build_market_context() -> dict:
     if isinstance(fg, Exception):
         logger.error(f"Fear & Greed error: {fg}")
         fg = None
+    if isinstance(new_sources, Exception):
+        logger.warning(f"New sources error: {new_sources}")
+        new_sources = {}
 
     # Patterns from 1h OHLC
     patterns: dict = {}
-    ohlc_1h = market.get("ohlc_1h", [])
+    ohlc_1h  = market.get("ohlc_1h",  [])
+    ohlc_15m = market.get("ohlc_15m", [])
+    ohlc_4h  = market.get("ohlc_4h",  [])
+    ohlc_1d  = market.get("ohlc_1d",  [])
+
     if ohlc_1h:
         try:
             patterns = detect_all_patterns(ohlc_1h)
@@ -41,28 +55,99 @@ async def build_market_context() -> dict:
     # COT from cache (refreshed by scheduler weekly)
     cot = get_latest_cot()
 
-    # Confluence score
-    confluence = compute_confluence(market, patterns, cot, fg if not isinstance(fg, Exception) else None)
+    # News from cache (needed before confluence to include sentiment in signal count)
+    news = get_latest_news()
+
+    # Confluence score (includes news sentiment + ETF flows in the count)
+    fg_clean = fg if not isinstance(fg, Exception) else None
+    confluence = compute_confluence(
+        market, patterns, cot, fg_clean,
+        news=news, new_sources=new_sources,
+    )
 
     # Pre-AI signal evaluation (blocking conditions, signal level, watch list)
     signal_eval = evaluate_signal(market, macro if not isinstance(macro, Exception) else {}, confluence)
 
-    # News from cache
-    news = get_latest_news()
+    # Composite 100-point score
+    try:
+        composite = compute_composite_score(market, patterns, cot, fg_clean, news, new_sources)
+    except Exception as e:
+        logger.warning(f"Composite score error: {e}")
+        composite = {}
+
+    # ── SMC/ICT strategy engine ───────────────────────────────────
+    try:
+        mtf = analyze_mtf(ohlc_15m, ohlc_1h, ohlc_4h, ohlc_1d)
+    except Exception as e:
+        logger.warning(f"MTF analysis error: {e}")
+        mtf = {"biases": {}, "primary_bias": "NEUTRAL", "aligned_count": 0,
+               "aligned_str": "N/A", "bias_4h": "NEUTRAL", "bias_1d": "NEUTRAL"}
+
+    kill_zone = detect_kill_zone()
+
+    try:
+        liquidity_sweep = detect_liquidity_sweep(ohlc_1h)
+    except Exception as e:
+        logger.warning(f"Liquidity sweep error: {e}")
+        liquidity_sweep = {"detected": False, "type": None, "direction": None, "level": None, "desc": ""}
+
+    try:
+        wyckoff = detect_wyckoff_phase(ohlc_1h)
+    except Exception as e:
+        logger.warning(f"Wyckoff error: {e}")
+        wyckoff = {"phase": "Unknown", "desc": "", "trading_bias": "NEUTRAL"}
+
+    try:
+        rsi_divergence = detect_rsi_divergence(ohlc_1h)
+    except Exception as e:
+        logger.warning(f"RSI divergence error: {e}")
+        rsi_divergence = {"detected": False, "type": None, "direction": None, "desc": ""}
+
+    try:
+        trade_score_obj = compute_trade_score(
+            mtf, kill_zone, liquidity_sweep, patterns, rsi_divergence, market,
+        )
+    except Exception as e:
+        logger.warning(f"Trade score error: {e}")
+        trade_score_obj = {"score": 0, "conditions": {}, "details": [], "tradeable": False,
+                           "signal_level": "WEAK", "label": "N/A", "position_pct": 0.0}
+
+    # Market regime detection
+    try:
+        regime = detect_regime(
+            market,
+            macro if not isinstance(macro, Exception) else {},
+            new_sources,
+            fg_clean,
+        )
+    except Exception as e:
+        logger.warning(f"Regime detection error: {e}")
+        regime = {"regime": "neutral", "label": "Neutre", "gold_bias": "NEUTRAL",
+                  "description": "", "aggression": 1.0, "emoji": "⚪", "signals": []}
 
     # Trade learning data
     past_trades = get_closed_trades_for_learning(30)
 
     return {
-        "market":      market,
-        "macro":       macro,
-        "news":        news,
-        "patterns":    patterns,
-        "cot":         cot,
-        "fear_greed":  fg if not isinstance(fg, Exception) else None,
-        "confluence":  confluence,
-        "signal_eval": signal_eval,
-        "past_trades": past_trades,
+        "market":          market,
+        "macro":           macro,
+        "news":            news,
+        "patterns":        patterns,
+        "cot":             cot,
+        "fear_greed":      fg_clean,
+        "confluence":      confluence,
+        "signal_eval":     signal_eval,
+        "new_sources":     new_sources,
+        "composite":       composite,
+        "past_trades":     past_trades,
+        # SMC/ICT engine outputs
+        "mtf":             mtf,
+        "kill_zone":       kill_zone,
+        "liquidity_sweep": liquidity_sweep,
+        "wyckoff":         wyckoff,
+        "rsi_divergence":  rsi_divergence,
+        "trade_score_obj": trade_score_obj,
+        "regime":          regime,
     }
 
 
@@ -77,6 +162,14 @@ def format_context_for_prompt(ctx: dict) -> str:
     confluence = ctx.get("confluence", {})
     signal_eval = ctx.get("signal_eval", {})
     past_trades = ctx.get("past_trades", [])
+
+    mtf             = ctx.get("mtf", {})
+    kill_zone       = ctx.get("kill_zone", {})
+    liquidity_sweep = ctx.get("liquidity_sweep", {})
+    wyckoff         = ctx.get("wyckoff", {})
+    rsi_divergence  = ctx.get("rsi_divergence", {})
+    trade_score_obj = ctx.get("trade_score_obj", {})
+    regime          = ctx.get("regime", {})
 
     lines = ["=== DONNÉES DE MARCHÉ XAUUSD ==="]
 
@@ -170,11 +263,12 @@ def format_context_for_prompt(ctx: dict) -> str:
         lines.append(f"\n--- ÉVALUATION PRÉ-ANALYSE ---")
         lines.append(f"Niveau de signal : {lvl} (confluence {score}%)")
         lvl_map = {
-            "STRONG":   "✅ SIGNAL FORT — confluence ≥ 80%, trade recommandé avec confiance élevée",
-            "MODERATE": "⚡ SIGNAL MODÉRÉ — confluence 70-79%, trade possible avec prudence",
-            "WAIT":     "⏳ ATTENDRE — confluence < 70% ou conditions bloquantes, ne pas trader",
+            "STRONG":   "✅ SIGNAL FORT — confluence ≥ 75%, BUY/SELL recommandé avec confiance élevée",
+            "MODERATE": "⚡ SIGNAL MODÉRÉ — confluence 60-74%, BUY/SELL avec prudence",
+            "WEAK":     "〰 SIGNAL FAIBLE — confluence 45-59%, BUY/SELL avec position réduite 0.5%",
+            "WAIT":     "⏳ ATTENDRE — annonce HIGH impact dans moins de 30 minutes",
         }
-        lines.append(lvl_map.get(lvl, ""))
+        lines.append(lvl_map.get(lvl, f"Signal niveau {lvl}"))
         for b in signal_eval.get("blocking_conditions", []):
             lines.append(f"  ⛔ BLOQUANT: {b}")
         if signal_eval.get("watch_conditions"):
@@ -225,6 +319,113 @@ def format_context_for_prompt(ctx: dict) -> str:
             lines.append(f"{icon} [{n.get('impact','?')}] {n.get('title','')} ({n.get('source','')})")
             if n.get("summary"):
                 lines.append(f"   {n.get('summary','')[:200]}")
+
+    # ── Composite Score ──
+    composite = ctx.get("composite", {})
+    new_sources = ctx.get("new_sources", {})
+    if composite:
+        score = composite.get("score", 50)
+        direction = composite.get("direction", "?")
+        label = composite.get("label", "")
+        lines.append(f"\n=== SCORE COMPOSITE (0-100) ===")
+        lines.append(f"Score global: {score}/100 → {direction} — {label}")
+        lines.append(f"(>60 = BUY, <40 = SELL, 40-60 = signal faible)")
+        cats = composite.get("categories", {})
+        for cat, data in cats.items():
+            lines.append(f"  {cat}: {data.get('score')}/{data.get('max')} ({data.get('direction')})")
+
+    # ── SMC/ICT Strategy Engine ──
+    if mtf:
+        lines.append("\n=== STRATÉGIE SMC/ICT — ANALYSE MULTI-TIMEFRAME ===")
+        bias_4h = mtf.get("bias_4h", "NEUTRAL")
+        bias_1d = mtf.get("bias_1d", "NEUTRAL")
+        lines.append(f"Biais primaire (4H) : {bias_4h} | Biais long terme (1J) : {bias_1d}")
+        lines.append(f"Alignement MTF : {mtf.get('aligned_str', 'N/A')}")
+        biases = mtf.get("biases", {})
+        for tf, b in biases.items():
+            lines.append(f"  {tf:3s}: {b.get('bias','?'):8s}  ({b.get('detail','')})")
+
+    if kill_zone:
+        kz_name = kill_zone.get("name", "?")
+        kz_active = kill_zone.get("active", False)
+        kz_tradeable = kill_zone.get("tradeable", False)
+        status = "✅ ACTIVE" if kz_active and kz_tradeable else ("⚠️ EVITER" if kz_active else "❌ Hors session")
+        lines.append(f"\nSESSION ACTIVE : {kz_name} — {status}")
+
+    if liquidity_sweep.get("detected"):
+        lines.append(f"\nLIQUIDITY SWEEP : {liquidity_sweep.get('desc', '')}")
+        lines.append(f"  → Signal attendu : {liquidity_sweep.get('direction', '?')}")
+    else:
+        lines.append(f"\nLIQUIDITY SWEEP : Aucun sweep récent détecté")
+
+    if wyckoff:
+        lines.append(f"\nPHASE WYCKOFF : {wyckoff.get('phase', '?')}")
+        lines.append(f"  {wyckoff.get('desc', '')}")
+
+    if rsi_divergence.get("detected"):
+        lines.append(f"\nDIVERGENCE RSI : {rsi_divergence.get('desc', '')}")
+    else:
+        lines.append(f"\nDIVERGENCE RSI : Aucune divergence détectée")
+
+    if trade_score_obj:
+        score = trade_score_obj.get("score", 0)
+        label = trade_score_obj.get("label", "")
+        tradeable = trade_score_obj.get("tradeable", False)
+        lines.append(f"\nSCORE TRADE SMC/ICT : {score}/100 — {label}")
+        lines.append(f"Trade actionnable : {'✅ OUI (score ≥ 70)' if tradeable else '❌ NON (score < 70)'}")
+        for d in trade_score_obj.get("details", []):
+            lines.append(f"  {d}")
+
+    # ── Market Regime ──
+    if regime:
+        r_label = regime.get("label", "?")
+        r_emoji = regime.get("emoji", "")
+        r_bias  = regime.get("gold_bias", "NEUTRAL")
+        r_agg   = regime.get("aggression", 1.0)
+        lines.append(f"\n=== RÉGIME DE MARCHÉ : {r_emoji} {r_label} ===")
+        lines.append(f"Biais or: {r_bias} | Agressivité suggérée: ×{r_agg}")
+        lines.append(f"{regime.get('description', '')}")
+        for s in regime.get("signals", [])[:4]:
+            lines.append(f"  • {s}")
+
+    lines.append("\n⚡ RÈGLE ABSOLUE SMC/ICT :")
+    lines.append("  1. Ne trader QUE dans le sens du biais 4H")
+    lines.append("  2. Score trade ≥ 70 obligatoire pour BUY/SELL")
+    lines.append("  3. Kill zone active (London Open 8h-10h UTC ou NY Open 13h30-15h30 UTC)")
+    lines.append("  4. Si score < 70 → direction ATTENDRE même si confluence technique élevée")
+
+    # ── New Intelligence Sources ──
+    corr = new_sources.get("correlations", {})
+    if corr:
+        lines.append("\n--- CORRÉLATIONS 30J (vs GC=F) ---")
+        sym_labels = {"^GSPC": "S&P500", "BTC-USD": "BTC", "CL=F": "WTI", "^VIX": "VIX", "TLT": "TLT", "DX-Y.NYB": "DXY"}
+        for sym, d in corr.items():
+            label = sym_labels.get(sym, sym)
+            lines.append(f"  {label}: corr={d.get('correlation_30d',0):+.3f} → {d.get('signal','?')}")
+
+    etf = new_sources.get("etf_flows", {})
+    if etf:
+        lines.append("\n--- FLUX ETF OR ---")
+        for ticker, d in etf.items():
+            lines.append(f"  {ticker}: {d.get('price_change_pct',0):+.2f}% vol×{d.get('volume_vs_avg',1):.1f} → {d.get('signal','?')}")
+
+    opts = new_sources.get("options", {})
+    if opts:
+        lines.append(f"\n--- OPTIONS GLD P/C RATIO ---")
+        lines.append(f"  P/C={opts.get('put_call_ratio','?')} → {opts.get('signal','?')} ({opts.get('note','')})")
+
+    yields = new_sources.get("yields", {})
+    if yields:
+        lines.append(f"\n--- COURBE DES TAUX TREASURY ---")
+        lines.append(f"  2Y={yields.get('y2','?')}% | 10Y={yields.get('y10','?')}% | Spread 2s10s={yields.get('spread_2_10',0):+.3f}%")
+        lines.append(f"  Inversion: {'OUI → refuge or' if yields.get('inverted') else 'NON'} → {yields.get('signal','?')}")
+
+    fed = new_sources.get("fed_nlp", {})
+    if fed:
+        lines.append(f"\n--- FED DISCOURS NLP ---")
+        lines.append(f"  Score: {fed.get('score',0):+d}/±5 | Biais: {fed.get('bias','?')} → {fed.get('gold_signal','?')} pour l'or")
+        if fed.get("summary"):
+            lines.append(f"  Résumé: {fed['summary']}")
 
     # ── Trade learning ──
     if past_trades:

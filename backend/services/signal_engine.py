@@ -10,13 +10,11 @@ logger = logging.getLogger(__name__)
 
 SIGNAL_STRONG   = "STRONG"
 SIGNAL_MODERATE = "MODERATE"
+SIGNAL_WEAK     = "WEAK"
 SIGNAL_WAIT     = "WAIT"
 
 # Confluence thresholds
-_T = {SIGNAL_STRONG: 80, SIGNAL_MODERATE: 70, SIGNAL_WAIT: 50}
-
-# Asian thin-liquidity hours (UTC): 21:00-02:00
-_ASIAN_THIN_HOURS = set(range(0, 3)) | {21, 22, 23}
+_T = {SIGNAL_STRONG: 75, SIGNAL_MODERATE: 60, SIGNAL_WEAK: 45}
 
 
 def evaluate_signal(market: dict, macro: dict, confluence: dict) -> dict:
@@ -32,6 +30,8 @@ def evaluate_signal(market: dict, macro: dict, confluence: dict) -> dict:
         level = SIGNAL_STRONG
     elif score >= _T[SIGNAL_MODERATE]:
         level = SIGNAL_MODERATE
+    elif score >= _T[SIGNAL_WEAK]:
+        level = SIGNAL_WEAK
     else:
         level = SIGNAL_WAIT
 
@@ -49,27 +49,13 @@ def evaluate_signal(market: dict, macro: dict, confluence: dict) -> dict:
 def _check_blockers(market: dict, macro: dict, confluence: dict) -> list[str]:
     blockers: list[str] = []
 
-    # 1. HIGH-impact macro event within 4 hours (days_until == 0)
+    # SEUL bloquant : annonce HIGH impact dans moins de 30 minutes avec heure connue
     nxt = macro.get("next_event")
-    if nxt and nxt.get("impact") == "HIGH" and nxt.get("days_until", 99) == 0:
-        blockers.append(f"Annonce HIGH impact dans les 4h : {nxt.get('title', '?')} — risque de gap")
-
-    # 2. ATR abnormally high (> 0.8% of price)
-    atr_pct = market.get("atr_pct")
-    if atr_pct and atr_pct > 0.8:
-        blockers.append(f"Volatilité ATR excessive ({atr_pct:.2f}%) — risque de stop hunting")
-
-    # 3. Asian thin session (22:00-02:00 UTC) — warning only, not hard block
-    utc_hour = datetime.now(timezone.utc).hour
-    if utc_hour in _ASIAN_THIN_HOURS:
-        blockers.append("Session asiatique creuse — spread élargi, liquidité faible")
-
-    # 4. ≥3 contradictory signals in each direction
-    sigs   = confluence.get("signals", [])
-    buy_n  = sum(1 for s in sigs if s["direction"] == "BUY")
-    sell_n = sum(1 for s in sigs if s["direction"] == "SELL")
-    if buy_n >= 3 and sell_n >= 3:
-        blockers.append(f"Signaux contradictoires — {buy_n} haussiers vs {sell_n} baissiers")
+    if nxt and nxt.get("impact") == "HIGH":
+        hours_until = nxt.get("hours_until", 99)
+        has_time    = nxt.get("has_time", False)
+        if has_time and hours_until < 0.5:
+            blockers.append(f"Annonce HIGH impact dans moins de 30min : {nxt.get('title', '?')} — attendre la publication")
 
     return blockers
 
@@ -109,7 +95,7 @@ def _compute_watch(market: dict, confluence: dict) -> list[str]:
                 conds.append(f"Prix doit casser le support ${near:.2f}")
 
     # Confluence gap
-    if score < _T[SIGNAL_MODERATE]:
-        conds.append(f"Score de confluence doit atteindre 70% (actuellement {score}%)")
+    if score < _T[SIGNAL_WEAK]:
+        conds.append(f"Score de confluence doit atteindre 45% (actuellement {score}%)")
 
     return conds[:4]

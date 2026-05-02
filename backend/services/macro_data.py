@@ -185,10 +185,14 @@ async def _fetch_next_macro_event() -> dict | None:
 
             if event_dt >= now:
                 days_until = (event_dt.date() - now.date()).days
+                hours_until = max(0.0, (event_dt - now).total_seconds() / 3600)
+                has_time = bool(time_str and time_str not in ("Tentative", "All Day", ""))
                 candidates.append({
                     "title": title,
                     "date": event_dt.strftime("%Y-%m-%d"),
                     "days_until": days_until,
+                    "hours_until": round(hours_until, 2),
+                    "has_time": has_time,
                     "impact": impact.upper(),
                 })
 

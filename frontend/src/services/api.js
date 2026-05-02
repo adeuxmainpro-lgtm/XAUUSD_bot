@@ -43,7 +43,22 @@ export const createTrade = (trade) => api.post('/journal/trades', trade).then(r 
 export const updateTrade = (id, trade) => api.put(`/journal/trades/${id}`, trade).then(r => r.data)
 export const deleteTrade = (id) => api.delete(`/journal/trades/${id}`)
 export const getJournalStats = () => api.get('/journal/stats').then(r => r.data)
+export const getJournalDetailed = () => api.get('/journal/stats/detailed').then(r => r.data)
 export const analyzeTrade = (id) => api.post(`/journal/trades/${id}/analyze`).then(r => r.data)
+export const exportTradesCSV = () =>
+  api.get('/journal/export/csv', { responseType: 'blob' }).then(r => r.data)
 
 // Macro context
 export const getMacroContext = () => api.get('/macro/context').then(r => r.data)
+
+// Composite score (correlations, ETF flows, options, yields, Fed NLP)
+export const getCompositeScore = (refresh = false) =>
+  api.get('/analysis/composite', { params: { refresh } }).then(r => r.data)
+
+// Performance & Backtest
+export const getPerformance = () => api.get('/performance').then(r => r.data)
+export const getBacktest = (years = 5) =>
+  api.get('/performance/backtest', { params: { years } }).then(r => r.data)
+
+// API quota
+export const getQuota = () => api.get('/market/quota').then(r => r.data)

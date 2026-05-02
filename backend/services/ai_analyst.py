@@ -17,71 +17,142 @@ def _get_client() -> AsyncAnthropic:
     return _client
 
 
-SYSTEM_PROMPT = """Tu es un expert analyste XAUUSD (Or/Dollar) avec 15 ans d'expérience en trading institutionnel.
-Tu combines analyse technique avancée, analyse fondamentale macro-économique, SMC/ICT, sentiment de marché et COT report.
+SYSTEM_PROMPT = """Tu es un trader institutionnel expert XAUUSD (Or/Dollar) avec 20 ans d'expérience.
+Tu appliques la stratégie SMC/ICT professionnelle avec un win rate cible > 60% et R/R minimum 1:2.
 
-Tes spécialités :
-- Patterns chandeliers japonais, chartistes, SMC (Order Blocks, FVG, BOS/CHoCH), ICT (Kill Zones, OTE, Breaker Blocks)
-- Impact des politiques monétaires (Fed, BCE) sur l'or
-- Corrélations Or/DXY/Taux réels/Inflation
-- Lecture du COT report (positionnement des grands acteurs)
-- Fear & Greed index comme indicateur contrarian pour l'or
-- Apprentissage de l'historique des trades pour adapter les recommandations
+━━━ MÉTHODOLOGIE PRINCIPALE : SMC/ICT ━━━
 
-Principes :
-- Ne jamais prendre de position sans stop-loss défini
-- Ratio R/R minimum 1:2 (TP2 ≥ entrée ± 2×distance_SL) — en dessous de 1:2, ne pas trader
-- Prudence extrême lors des annonces macro importantes (NFP, CPI, FOMC)
-- Plus le score de confluence est élevé, plus la confiance dans le signal doit être élevée
-- Tenir compte de l'historique des trades : si des patterns similaires ont été perdants récemment, réduire la confiance
-- Un score de confluence > 70% avec 5+ signaux alignés justifie une confiance ≥ 75%
-- Objectif : maximiser les gains et minimiser les pertes — mieux vaut attendre que prendre un mauvais trade
+HIÉRARCHIE DES TIMEFRAMES (obligatoire) :
+1. 1J  → biais directionnel long terme (contexte macro)
+2. 4H  → biais primaire : NE TRADER QUE dans ce sens
+3. 1H  → structure d'entrée (OB, FVG, patterns)
+4. 15M → entrée précise et confirmation finale
 
-Quand tu fournis une recommandation, tu DOIS répondre UNIQUEMENT avec un JSON valide.
-Quand on te pose une question ouverte, tu réponds en français de façon concise et pédagogique."""
+PROCESSUS D'ENTRÉE EN 6 ÉTAPES (toutes obligatoires) :
+  1. Confirmer le biais 4H (BULLISH ou BEARISH) — c'est la loi
+  2. Vérifier la Kill Zone active (London 8h-10h UTC | NY 13h30-15h30 UTC | London Close 16h-17h)
+  3. Identifier un Liquidity Sweep (fausse cassure + rejet) dans la direction du biais
+  4. Localiser un Order Block (OB) et/ou Fair Value Gap (FVG) comme zone d'entrée
+  5. Confirmer avec RSI (momentum) ou divergence RSI
+  6. Vérifier le Score Trade SMC/ICT ≥ 70/100
 
-RECOMMENDATION_PROMPT_TEMPLATE = """Analyse le contexte de marché suivant et fournis une recommandation de trading XAUUSD.
+SCORE TRADE 0-100 (calculé dans le contexte) :
+  MTF 3+/4 alignés  → +30 pts   (2/4 → +15 pts)
+  Kill Zone active  → +20 pts
+  Liquidity Sweep   → +20 pts
+  OB + FVG présents → +15 pts   (OB ou FVG seul → +8 pts)
+  Divergence RSI    → +15 pts
+  ≥90 → très fort (1.5%) | 80-89 → fort (1%) | 70-79 → modéré (0.5%) | <70 → ATTENDRE
+
+PHASES WYCKOFF → STRATÉGIE :
+  Mark Up       → trader les pullbacks haussiers sur OB/FVG (BUY)
+  Mark Down     → trader les rebonds baissiers sur OB/FVG (SELL)
+  Accumulation  → préparer des BUY sur les tests du support (spring/test)
+  Distribution  → préparer des SELL sur les tests de résistance (upthrust)
+
+CALCUL SL/TP PROFESSIONNEL :
+SELL :
+  SL  = swing high récent + ATR × 0.5 (jamais sur un chiffre rond)
+  TP1 = prochain support significatif / swing low
+  TP2 = objectif mesuré du pattern (hauteur Double Top, H&S, gap FW, etc.)
+  TP2 MINIMUM = distance SL × 2
+
+BUY :
+  SL  = swing low récent − ATR × 0.5 (jamais sur un chiffre rond)
+  TP1 = prochaine résistance significative / swing high
+  TP2 = objectif mesuré symétrique
+  TP2 MINIMUM = distance SL × 2
+
+GESTION DU RISQUE (règles absolues) :
+  - Risque max : 1% par trade (0.5% si signal faible ou ATR élevé)
+  - Max 2 trades par session, max 3 par jour
+  - Sortie partielle : 50% à TP1 → SL au break-even → 50% jusqu'à TP2
+  - Si 2 pertes consécutives → stop trading la journée
+  - SL jamais sur un nombre rond (éviter les niveaux institutionnels)
+
+CORRÉLATIONS MACRO :
+  - DXY haussier → or baissier | DXY baissier → or haussier
+  - VIX > 20 → refuge or | VIX < 15 → risk-on, pression sur or
+  - Taux réels négatifs → or haussier | Taux réels positifs → or baissier
+  - Fed dovish → or haussier | Fed hawkish → or baissier
+
+RÈGLES FINALES :
+  - Score composite >60 = BUY | <40 = SELL | 40-60 = signal faible
+  - ATTENDRE réservé UNIQUEMENT si : annonce HIGH < 30 min OU score trade < 70/100
+  - Donner BUY ou SELL dans 95% des cas (score trade ≥ 70 requis)
+  - Objectif : 3-8 trades de qualité par semaine, R/R ≥ 1:2
+
+Format de réponse : JSON valide uniquement pour les recommandations.
+Pour les questions ouvertes : réponse concise en français."""
+
+RECOMMENDATION_PROMPT_TEMPLATE = """Analyse le contexte de marché suivant et fournis une recommandation SMC/ICT pour XAUUSD.
 
 {context}
 
-RÈGLES DE SIGNAL :
-- confluence ≥ 80% → direction BUY ou SELL, signal_level = "STRONG"
-- confluence 70-79% → direction BUY ou SELL, signal_level = "MODERATE"
-- confluence < 70% ou conditions bloquantes → direction ATTENDRE, signal_level = "WAIT", entry/SL/TP = null
-- Ratio R/R OBLIGATOIRE ≥ 1:2 — si impossible d'avoir TP2 ≥ entrée ± 2×SL_distance, mettre direction = ATTENDRE
-- Si des conditions bloquantes sont indiquées dans le contexte → OBLIGATOIREMENT direction ATTENDRE
+━━━ PROCESSUS DE DÉCISION OBLIGATOIRE ━━━
 
-Réponds UNIQUEMENT avec un objet JSON valide (sans markdown, sans texte avant/après) :
+ÉTAPE 1 — Vérifier le biais 4H :
+  Lit "Biais primaire (4H)" dans le contexte. C'est la direction autorisée.
+  Si NEUTRAL → prudence, position réduite.
+
+ÉTAPE 2 — Vérifier le Score Trade SMC/ICT :
+  Lit "SCORE TRADE SMC/ICT : XX/100" dans le contexte.
+  Score ≥ 70 → trade autorisé | Score < 70 → ATTENDRE (sauf exception macro forte)
+
+ÉTAPE 3 — Kill Zone :
+  Lit "SESSION ACTIVE". London Open ou NY Open actifs = conditions optimales.
+
+ÉTAPE 4 — Signal primaire (Score Composite 0-100) :
+  >60 → BUY | <40 → SELL | 40-60 → signal faible directionnel
+
+ÉTAPE 5 — Calculer les niveaux précis :
+  Utilise ATR, OB, FVG, supports/résistances du contexte.
+  SL jamais sur un nombre rond ($X00.00 ou $X50.00) — décaler de $2-$5.
+  TP2 minimum = distance_SL × 2.
+
+NIVEAUX DE SIGNAL (signal_level) :
+  Score trade ≥ 70 + confluence ≥ 75% → "STRONG"
+  Score trade ≥ 70 + confluence 60-74% → "MODERATE"
+  Score trade ≥ 70 + confluence 45-59% → "WEAK"
+  Score trade < 70 → "WAIT" (sauf annonce macro exceptionnelle)
+
+SORTIE PARTIELLE (obligatoire, à décrire dans partial_exit) :
+  Fermer 50% à TP1 → SL au break-even → Laisser 50% courir jusqu'à TP2.
+
+━━━ FORMAT JSON (répondre UNIQUEMENT avec ce JSON, sans texte avant/après) ━━━
 {{
-  "direction": "BUY | SELL | ATTENDRE",
-  "signal_level": "STRONG | MODERATE | WAIT",
-  "entry": 2345.50,
-  "stop_loss": 2330.00,
-  "take_profit_1": 2365.00,
-  "take_profit_2": 2385.00,
-  "risk_reward": 2.1,
-  "confidence": 72,
-  "confluence_score": 68,
-  "timeframe": "intraday | swing | scalping",
-  "main_arguments": ["argument 1", "argument 2", "argument 3"],
-  "main_risks": ["risque 1", "risque 2"],
-  "key_patterns": ["pattern détecté 1", "pattern détecté 2"],
-  "watch_conditions": ["Condition à surveiller 1", "Condition à surveiller 2"],
-  "alternative_scenario": "Description du scénario alternatif",
-  "market_summary": "Résumé en 3 phrases du contexte de marché",
-  "no_trade_reason": "Explication si ATTENDRE : ce qui manque ou bloque",
+  "direction":        "BUY | SELL | ATTENDRE",
+  "signal_level":     "STRONG | MODERATE | WEAK | WAIT",
+  "entry":            3300.50,
+  "stop_loss":        3315.00,
+  "take_profit_1":    3275.00,
+  "take_profit_2":    3245.00,
+  "risk_reward":      2.3,
+  "confidence":       75,
+  "confluence_score": 72,
+  "timeframe":        "intraday | swing | scalping",
+  "partial_exit":     "Fermer 50% à TP1 ($X). SL au BE ($Y). 50% jusqu'à TP2 ($Z).",
+  "main_arguments":   ["argument SMC/ICT précis 1", "argument 2", "argument 3"],
+  "main_risks":       ["risque 1", "risque 2"],
+  "key_patterns":     ["pattern ou signal clé 1", "pattern 2"],
+  "watch_conditions": ["condition à surveiller 1", "condition 2"],
+  "alternative_scenario": "Scénario si biais invalide",
+  "market_summary":   "Résumé SMC/ICT en 2-3 phrases",
+  "no_trade_reason":  null,
   "dangerous_period": false,
   "dangerous_reason": null,
-  "trade_learning_note": "Note sur l'historique des trades si pertinent"
+  "trade_learning_note": null,
+  "wyckoff_note":     "Phase Wyckoff et implication pour le trade"
 }}
 
-Règles :
-- entry/SL/TP/risk_reward : null si direction = ATTENDRE
-- signal_level : doit correspondre strictement aux seuils de confluence
-- watch_conditions : liste de 2-4 conditions précises à surveiller (pour ATTENDRE)
-- no_trade_reason : obligatoire si ATTENDRE, expliquer en français ce qu'il manque
-- confidence : entier 0-100, cohérent avec signal_level (STRONG ≥ 75, MODERATE 50-74)
-- dangerous_period : true si annonce macro imminente ou volatilité extrême
+Contraintes JSON :
+- entry : prix actuel ±0.02% (BUY légèrement en-dessous, SELL légèrement au-dessus)
+- stop_loss : calculé depuis niveaux techniques, pas sur un nombre rond
+- TP2 OBLIGATOIREMENT ≥ distance_SL × 2
+- partial_exit : décrire les 3 étapes avec prix réels
+- confidence : STRONG≥70, MODERATE 50-69, WEAK 30-49
+- entry/SL/TP/risk_reward : null uniquement si direction = ATTENDRE
+- dangerous_period : true si annonce macro HIGH dans moins de 30min
 """
 
 
@@ -127,10 +198,43 @@ async def run_analysis() -> dict:
             confluence = ctx.get("confluence", {})
             rec["confluence_detail"] = confluence.get("detail_str", "")
 
-            # Post-processing: enforce R/R ≥ 1:2
+            # Post-processing: pin entry to current price (never use a stale price)
+            current_price = ctx["market"].get("price")
+            direction = rec.get("direction")
+            if current_price and direction in ("BUY", "SELL") and rec.get("entry") is not None:
+                # BUY: enter at or slightly below current price (small limit buffer)
+                # SELL: enter at or slightly above current price
+                if direction == "BUY":
+                    corrected_entry = round(current_price * 0.9998, 2)
+                else:
+                    corrected_entry = round(current_price * 1.0002, 2)
+
+                old_entry = rec["entry"]
+                rec["entry"] = corrected_entry
+
+                # Recalculate R/R with the corrected entry (SL/TP levels stay as-is)
+                sl  = rec.get("stop_loss")
+                tp2 = rec.get("take_profit_2") or rec.get("take_profit_1")
+                if sl and tp2:
+                    try:
+                        if direction == "BUY":
+                            sl_dist = corrected_entry - sl
+                            tp_dist = tp2 - corrected_entry
+                        else:
+                            sl_dist = sl - corrected_entry
+                            tp_dist = corrected_entry - tp2
+                        if sl_dist > 0 and tp_dist > 0:
+                            rec["risk_reward"] = round(tp_dist / sl_dist, 2)
+                    except Exception:
+                        pass
+
+                if abs(old_entry - corrected_entry) > 1.0:
+                    logger.info(f"Entry corrected {direction}: ${old_entry} → ${corrected_entry} (market: ${current_price})")
+
+            # Post-processing: enforce R/R ≥ 1:1.2
             direction = rec.get("direction")
             rr = rec.get("risk_reward")
-            if direction in ("BUY", "SELL") and (rr is None or rr < 2.0):
+            if direction in ("BUY", "SELL") and (rr is None or rr < 1.2):
                 logger.info(f"R/R override: {direction} with R/R={rr} → ATTENDRE")
                 rec["direction"] = "ATTENDRE"
                 rec["signal_level"] = "WAIT"
@@ -140,7 +244,47 @@ async def run_analysis() -> dict:
                 rec["take_profit_2"] = None
                 if not rec.get("no_trade_reason"):
                     rr_str = f"{rr:.1f}" if rr is not None else "—"
-                    rec["no_trade_reason"] = f"Ratio R/R insuffisant ({rr_str}) — minimum 1:2 requis pour ce trade"
+                    rec["no_trade_reason"] = f"Ratio R/R insuffisant ({rr_str}) — minimum 1:1.2 requis pour ce trade"
+
+            # Post-processing: merge pre-computed SMC/ICT engine fields
+            kill_zone       = ctx.get("kill_zone", {})
+            mtf             = ctx.get("mtf", {})
+            wyckoff         = ctx.get("wyckoff", {})
+            rsi_divergence  = ctx.get("rsi_divergence", {})
+            liquidity_sweep = ctx.get("liquidity_sweep", {})
+            trade_score_obj = ctx.get("trade_score_obj", {})
+
+            rec["session_active"]   = kill_zone.get("name", "")
+            rec["session_badge"]    = kill_zone.get("color", "red")
+            rec["session_tradeable"] = kill_zone.get("tradeable", False)
+            rec["mtf"]              = mtf
+            rec["wyckoff"]          = wyckoff
+            rec["rsi_divergence"]   = rsi_divergence
+            rec["liquidity_sweep"]  = liquidity_sweep
+            rec["trade_score_obj"]  = trade_score_obj
+            rec["trade_score"]      = trade_score_obj.get("score", 0)
+            rec["regime"]           = ctx.get("regime", {})
+
+            # Enforce ATTENDRE if trade score < 70 and no strong override
+            ts_score = trade_score_obj.get("score", 0)
+            ts_tradeable = trade_score_obj.get("tradeable", False)
+            if (not ts_tradeable
+                    and rec.get("direction") in ("BUY", "SELL")
+                    and not rec.get("dangerous_period")):
+                logger.info(f"Trade score override: {rec.get('direction')} score={ts_score} < 70 → ATTENDRE")
+                rec["direction"]   = "ATTENDRE"
+                rec["signal_level"] = "WAIT"
+                rec["entry"] = rec["stop_loss"] = rec["take_profit_1"] = rec["take_profit_2"] = None
+                if not rec.get("no_trade_reason"):
+                    rec["no_trade_reason"] = (
+                        f"Score SMC/ICT insuffisant ({ts_score}/100 < 70 requis) — "
+                        f"{trade_score_obj.get('label', '')}. "
+                        f"Session: {kill_zone.get('name', '?')}. "
+                        f"Prochaine opportunité: London Open 8h UTC ou NY Open 13h30 UTC."
+                    )
+
+            # Post-processing: compute gain estimate and weekly projection
+            _compute_gain_estimate(rec)
 
             # Post-processing: ATR > 0.6% → 50% position reduction
             atr_pct = ctx["market"].get("atr_pct")
@@ -148,14 +292,21 @@ async def run_analysis() -> dict:
 
             # Post-processing: consecutive losses → conservative mode
             consec_losses = get_consecutive_losses()
+            is_weak = rec.get("signal_level") == "WEAK"
             if consec_losses >= 2:
                 rec["recommended_risk_pct"] = 0.5
                 rec["conservative_mode"] = True
                 rec["conservative_reason"] = f"{consec_losses} pertes consécutives — mode conservateur activé (0.5% du capital)"
+            elif is_weak:
+                rec["recommended_risk_pct"] = 0.5
+                rec["conservative_mode"] = False
+                rec["conservative_reason"] = None
+                rec["weak_signal"] = True
             else:
                 rec["recommended_risk_pct"] = 1.0
                 rec["conservative_mode"] = False
                 rec["conservative_reason"] = None
+                rec["weak_signal"] = False
 
             save_analysis(rec)
 
@@ -205,6 +356,80 @@ async def chat(user_message: str) -> str:
     except Exception as e:
         logger.error(f"chat error: {e}")
         return "Désolé, une erreur s'est produite. Veuillez réessayer."
+
+
+def _compute_gain_estimate(rec: dict) -> None:
+    """Compute gain/loss estimates for a standard 1000€ bankroll at 1% risk.
+    Partial-exit model: 50% closed at TP1, SL moved to BE, 50% runs to TP2.
+    Adds 'gain_estimate' and 'weekly_projection' keys in-place.
+    """
+    direction = rec.get("direction")
+    if direction not in ("BUY", "SELL"):
+        return
+    entry = rec.get("entry")
+    sl    = rec.get("stop_loss")
+    tp1   = rec.get("take_profit_1")
+    tp2   = rec.get("take_profit_2")
+    if not (entry and sl and tp1):
+        return
+
+    sl_dist  = abs(entry - sl)
+    tp1_dist = abs(tp1 - entry)
+    tp2_dist = abs(tp2 - entry) if tp2 else tp1_dist * 2
+
+    if sl_dist <= 0:
+        return
+
+    # Standard reference: 1000€ bankroll, 1% risk → 10€ at risk
+    BANKROLL = 1000
+    RISK_PCT = 0.01
+    risk_eur = BANKROLL * RISK_PCT  # 10€
+
+    rr_tp1 = tp1_dist / sl_dist
+    rr_tp2 = tp2_dist / sl_dist
+
+    # Full position at TP1 / TP2
+    gain_tp1_full = round(risk_eur * rr_tp1, 1)
+    gain_tp2_full = round(risk_eur * rr_tp2, 1)
+
+    # Partial exit: 50% closed at TP1, 50% runs to TP2 (no more risk after BE)
+    # If TP1 hit: lock +gain_tp1_full×0.5 from first half
+    # If TP2 hit: lock +gain_tp2_full×0.5 from second half
+    # If stop hit before TP1: lose full risk_eur
+    gain_partial_both  = round(gain_tp1_full * 0.5 + gain_tp2_full * 0.5, 1)
+    gain_partial_tp1only = round(gain_tp1_full * 0.5, 1)  # TP2 missed, SL at BE
+
+    # Weekly/monthly projection (60% win rate, 5 trades/week, partial exit model)
+    WIN_RATE    = 0.60
+    TRADES_WEEK = 5
+    # Expected gain per trade using partial model:
+    #   P(TP1 hit) = WIN_RATE, of which assume 70% also reach TP2
+    p_both  = WIN_RATE * 0.70
+    p_tp1   = WIN_RATE * 0.30
+    p_loss  = 1 - WIN_RATE
+    ev_per_trade = (p_both * gain_partial_both
+                    + p_tp1 * gain_partial_tp1only
+                    - p_loss * risk_eur)
+    weekly_eur = round(ev_per_trade * TRADES_WEEK, 1)
+    weekly_pct = round(weekly_eur / BANKROLL * 100, 2)
+    monthly_pct = round(weekly_pct * 4.3, 1)
+
+    rec["gain_estimate"] = {
+        "bankroll_example":    BANKROLL,
+        "risk_eur":            risk_eur,
+        "gain_tp1_eur":        gain_tp1_full,
+        "gain_tp2_eur":        gain_tp2_full,
+        "gain_partial_eur":    gain_partial_both,
+        "rr_tp1":              round(rr_tp1, 2),
+        "rr_tp2":              round(rr_tp2, 2),
+    }
+    rec["weekly_projection"] = {
+        "trades_per_week":     TRADES_WEEK,
+        "win_rate_pct":        int(WIN_RATE * 100),
+        "weekly_gain_eur":     weekly_eur,
+        "weekly_gain_pct":     weekly_pct,
+        "monthly_gain_pct":    monthly_pct,
+    }
 
 
 def _summarize_patterns(patterns: dict) -> list[str]:

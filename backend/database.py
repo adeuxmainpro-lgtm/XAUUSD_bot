@@ -101,6 +101,19 @@ def init_db():
         )
     """)
 
+    # Migrate trades table: add new columns if they don't exist yet
+    for col_def in [
+        "session_at_entry TEXT",
+        "trade_score INTEGER",
+        "wyckoff_phase TEXT",
+        "mtf_aligned INTEGER",
+    ]:
+        col_name = col_def.split()[0]
+        try:
+            cur.execute(f"ALTER TABLE trades ADD COLUMN {col_def}")
+        except Exception:
+            pass  # Column already exists
+
     # COT cache
     cur.execute("""
         CREATE TABLE IF NOT EXISTS cot_cache (
@@ -286,8 +299,9 @@ def save_trade(data: dict) -> int:
         INSERT INTO trades (
             trade_date, direction, entry_price, stop_loss, take_profit_1, take_profit_2,
             exit_price, status, profit_eur, lot_size, notes,
-            rsi_at_entry, trend_at_entry, confluence_score, patterns_at_entry
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            rsi_at_entry, trend_at_entry, confluence_score, patterns_at_entry,
+            session_at_entry, trade_score, wyckoff_phase, mtf_aligned
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         data.get("trade_date"),
         data.get("direction"),
@@ -304,6 +318,10 @@ def save_trade(data: dict) -> int:
         data.get("trend_at_entry"),
         data.get("confluence_score"),
         json.dumps(data.get("patterns_at_entry", [])),
+        data.get("session_at_entry"),
+        data.get("trade_score"),
+        data.get("wyckoff_phase"),
+        data.get("mtf_aligned"),
     ))
     conn.commit()
     trade_id = cur.lastrowid
@@ -485,6 +503,127 @@ def get_closed_trades_for_learning(limit: int = 30) -> list[dict]:
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     return rows
+
+
+def get_trade_stats_detailed() -> dict:
+    """Extended stats: per session, per regime, per day-of-week, current streak."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT direction, status, profit_eur, trade_date,
+               session_at_entry, trade_score, wyckoff_phase,
+               confluence_score, rsi_at_entry
+        FROM trades
+        WHERE status IN ('WIN','LOSS','BE')
+        ORDER BY trade_date ASC
+    """)
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+
+    if not rows:
+        return {"by_session": {}, "by_regime": {}, "by_weekday": {}, "streak": 0}
+
+    closed = [r for r in rows if r["status"] in ("WIN", "LOSS")]
+
+    def _wr(trades):
+        w = [t for t in trades if t["status"] == "WIN"]
+        return round(len(w) / len(trades) * 100, 1) if trades else None
+
+    # ── By session ───────────────────────────────────────────────────
+    by_session: dict = {}
+    for t in closed:
+        s = t.get("session_at_entry") or "Inconnu"
+        by_session.setdefault(s, []).append(t)
+    by_session_stats = {
+        s: {"win_rate": _wr(v), "count": len(v),
+            "pnl": round(sum(t.get("profit_eur", 0) or 0 for t in v), 2)}
+        for s, v in by_session.items()
+    }
+
+    # ── By day of week ───────────────────────────────────────────────
+    _DAYS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+    by_day: dict = {}
+    for t in closed:
+        try:
+            from datetime import date as _date
+            d = _date.fromisoformat(t["trade_date"][:10])
+            day_name = _DAYS[d.weekday()]
+        except Exception:
+            day_name = "Inconnu"
+        by_day.setdefault(day_name, []).append(t)
+    by_day_stats = {
+        d: {"win_rate": _wr(v), "count": len(v),
+            "pnl": round(sum(t.get("profit_eur", 0) or 0 for t in v), 2)}
+        for d, v in by_day.items()
+    }
+
+    # ── By trade score bucket ─────────────────────────────────────────
+    by_score: dict = {}
+    for t in closed:
+        sc = t.get("trade_score")
+        if sc is None:
+            bucket = "Inconnu"
+        elif sc >= 90:
+            bucket = "≥90 (Très fort)"
+        elif sc >= 80:
+            bucket = "80-89 (Fort)"
+        elif sc >= 70:
+            bucket = "70-79 (Modéré)"
+        else:
+            bucket = "<70 (Faible)"
+        by_score.setdefault(bucket, []).append(t)
+    by_score_stats = {
+        b: {"win_rate": _wr(v), "count": len(v)}
+        for b, v in by_score.items()
+    }
+
+    # ── Current streak ────────────────────────────────────────────────
+    streak = 0
+    for t in reversed(closed):
+        if streak == 0:
+            streak = 1 if t["status"] == "WIN" else -1
+        elif streak > 0 and t["status"] == "WIN":
+            streak += 1
+        elif streak < 0 and t["status"] == "LOSS":
+            streak -= 1
+        else:
+            break
+
+    return {
+        "by_session":   by_session_stats,
+        "by_weekday":   by_day_stats,
+        "by_score":     by_score_stats,
+        "streak":       streak,
+        "total_closed": len(closed),
+    }
+
+
+def export_trades_csv() -> str:
+    """Export all trades as CSV string."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, trade_date, direction, entry_price, stop_loss, take_profit_1,
+               take_profit_2, exit_price, status, profit_eur, lot_size, notes,
+               rsi_at_entry, trend_at_entry, confluence_score,
+               session_at_entry, trade_score, wyckoff_phase, mtf_aligned
+        FROM trades ORDER BY trade_date ASC
+    """)
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+
+    if not rows:
+        return "id,trade_date,direction,entry_price,status,profit_eur\n"
+
+    headers = list(rows[0].keys())
+    lines   = [",".join(headers)]
+    for r in rows:
+        line = ",".join(
+            str(r.get(h, "") or "").replace(",", ";").replace("\n", " ")
+            for h in headers
+        )
+        lines.append(line)
+    return "\n".join(lines)
 
 
 # ─────────────────────────────────────────────

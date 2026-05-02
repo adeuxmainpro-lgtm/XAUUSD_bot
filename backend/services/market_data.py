@@ -1,9 +1,24 @@
+import asyncio
 import httpx
 import pandas as pd
 import ta
 import logging
 from datetime import datetime
 from backend.config import TWELVE_DATA_API_KEY, TWELVE_DATA_BASE_URL
+
+# ── API call counter ───────────────────────────────────────────────────────
+_api_call_count: int = 0
+_api_quota_cache: dict = {}
+_api_quota_ts: float = 0.0
+
+
+def increment_api_counter():
+    global _api_call_count
+    _api_call_count += 1
+
+
+def get_api_call_count() -> int:
+    return _api_call_count
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +44,36 @@ def _check_twelve_data_error(data: dict, context: str) -> str | None:
     return None
 
 
+async def fetch_api_quota() -> dict:
+    """Fetch remaining API credits from Twelve Data /api_usage endpoint."""
+    global _api_quota_cache, _api_quota_ts
+    import time
+    now = time.time()
+    if _api_quota_cache and (now - _api_quota_ts) < 300:  # cache 5 min
+        return _api_quota_cache
+    if not TWELVE_DATA_API_KEY:
+        return {"error": "No API key configured"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(f"{TWELVE_DATA_BASE_URL}/api_usage", params={"apikey": TWELVE_DATA_API_KEY})
+            r.raise_for_status()
+            data = r.json()
+        result = {
+            "current_usage":   data.get("current_usage", 0),
+            "plan_limit":      data.get("plan_limit", 800),
+            "plan_daily_limit": data.get("plan_daily_limit", 800),
+            "remaining":       max(0, data.get("plan_daily_limit", 800) - data.get("current_usage", 0)),
+            "session_calls":   _api_call_count,
+            "reset_time":      data.get("timestamp", ""),
+        }
+        _api_quota_cache = result
+        _api_quota_ts    = now
+        return result
+    except Exception as e:
+        logger.warning(f"fetch_api_quota error: {e}")
+        return {"error": str(e), "session_calls": _api_call_count}
+
+
 async def _fetch_current_price_twelve() -> dict | None:
     """Prix actuel via Twelve Data."""
     try:
@@ -40,6 +85,7 @@ async def _fetch_current_price_twelve() -> dict | None:
             r.raise_for_status()
             data = r.json()
 
+            increment_api_counter()
             err = _check_twelve_data_error(data, "price")
             if err:
                 logger.error(err)
@@ -74,6 +120,7 @@ async def _fetch_ohlc_twelve(interval: str = "1h", outputsize: int = 100) -> lis
             r.raise_for_status()
             data = r.json()
 
+            increment_api_counter()
             err = _check_twelve_data_error(data, f"ohlc/{interval}")
             if err:
                 logger.error(err)
@@ -169,7 +216,7 @@ def fetch_ohlc_yahoo(interval: str = "1h", outputsize: int = 200) -> list[dict] 
         result = []
         for ts, row in df.iterrows():
             result.append({
-                "datetime": ts.strftime("%Y-%m-%d %H:%M:%S"),
+                "datetime": ts.strftime("%Y-%m-%dT%H:%M:%S"),
                 "open":     float(row["Open"]),
                 "high":     float(row["High"]),
                 "low":      float(row["Low"]),
@@ -296,11 +343,22 @@ def _compute_pivot_levels(df: pd.DataFrame, window: int = 20) -> tuple[list, lis
 
 
 async def get_full_market_data() -> dict:
-    """Point d'entrée principal : prix + indicateurs 1h."""
-    price_data = await fetch_current_price()
-    ohlc_1h = await fetch_ohlc("1h", 200)
-    ohlc_4h = await fetch_ohlc("4h", 100)
-    ohlc_1d = await fetch_ohlc("1day", 50)
+    """Point d'entrée principal : prix + indicateurs multi-timeframe."""
+    price_data, ohlc_15m, ohlc_1h, ohlc_4h, ohlc_1d = await asyncio.gather(
+        fetch_current_price(),
+        fetch_ohlc("15min", 200),
+        fetch_ohlc("1h",    500),
+        fetch_ohlc("4h",    100),
+        fetch_ohlc("1day",  200),
+        return_exceptions=True,
+    )
+
+    # Unwrap exceptions
+    if isinstance(price_data, Exception): price_data = None
+    if isinstance(ohlc_15m,   Exception): ohlc_15m   = None
+    if isinstance(ohlc_1h,    Exception): ohlc_1h    = None
+    if isinstance(ohlc_4h,    Exception): ohlc_4h    = None
+    if isinstance(ohlc_1d,    Exception): ohlc_1d    = None
 
     indicators = {}
     if ohlc_1h:
@@ -312,9 +370,10 @@ async def get_full_market_data() -> dict:
     if price_data and "price" not in result:
         result["price"] = price_data["price"]
 
-    result["source"] = price_data.get("source", "twelve_data") if price_data else "unknown"
-    result["ohlc_1h"] = ohlc_1h[:50] if ohlc_1h else []
-    result["ohlc_4h"] = ohlc_4h[:50] if ohlc_4h else []
-    result["ohlc_1d"] = ohlc_1d[:30] if ohlc_1d else []
+    result["source"]   = price_data.get("source", "twelve_data") if price_data else "unknown"
+    result["ohlc_15m"] = ohlc_15m[:100] if ohlc_15m else []
+    result["ohlc_1h"]  = ohlc_1h[:100]  if ohlc_1h  else []
+    result["ohlc_4h"]  = ohlc_4h[:80]   if ohlc_4h  else []
+    result["ohlc_1d"]  = ohlc_1d[:100]  if ohlc_1d  else []
 
     return result

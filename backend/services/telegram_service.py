@@ -13,6 +13,37 @@ _COOLDOWN_HOURS = 4
 _last_alert_sent: datetime | None = None
 
 
+async def _send_text(text: str) -> bool:
+    """Low-level: send any text to Telegram."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            )
+            r.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error(f"Telegram send error: {e}")
+        return False
+
+
+async def send_weekly_ml_report() -> bool:
+    """Send the weekly ML performance report to Telegram."""
+    try:
+        from backend.services.ml_engine import build_weekly_report
+        text = build_weekly_report()
+        sent = await _send_text(text)
+        if sent:
+            logger.info("Telegram weekly ML report sent")
+        return sent
+    except Exception as e:
+        logger.error(f"send_weekly_ml_report error: {e}")
+        return False
+
+
 async def send_strong_signal(direction: str, confluence_score: int, price: float | None) -> bool:
     """Send a Telegram alert for a STRONG signal. Returns True if sent."""
     global _last_alert_sent
