@@ -1,6 +1,7 @@
 import sys
 import os
 import logging
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -356,3 +357,83 @@ async def cmd_sentiment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"cmd_sentiment error: {e}")
         await msg.edit_text(f"❌ Erreur : {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INTERACTIVE SIGNAL RESPONSE HANDLER  (OUI / NON)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def handle_signal_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles free-text OUI/NON replies to an interactive trading signal.
+    Ignores all other text so normal conversation isn't disrupted.
+    """
+    if not update.message or not update.message.text:
+        return
+
+    chat_id = update.effective_chat.id
+    text    = update.message.text.strip().lower()
+
+    if text not in ("oui", "non", "yes", "no"):
+        return  # not a signal response — ignore
+
+    try:
+        from backend.database import get_pending_signal, mark_signal_handled, save_trade
+
+        pending = get_pending_signal(chat_id)
+
+        if not pending:
+            await update.message.reply_text(
+                "ℹ️ Aucun signal en attente (expiré ou déjà traité).",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        signal_id = pending["id"]
+
+        if text in ("oui", "yes"):
+            # Create the trade in the journal
+            today = datetime.utcnow().strftime("%Y-%m-%d")
+            trade_data = {
+                "trade_date":      today,
+                "direction":       pending.get("direction", "BUY"),
+                "entry_price":     pending.get("entry"),
+                "stop_loss":       pending.get("stop_loss"),
+                "take_profit_1":   pending.get("take_profit_1"),
+                "take_profit_2":   pending.get("take_profit_2"),
+                "status":          "OPEN",
+                "profit_eur":      0,
+                "lot_size":        0.01,
+                "confluence_score": pending.get("confluence_score"),
+                "notes":           f"Ouvert via alerte Telegram — confiance {pending.get('confidence',0)}%",
+            }
+            trade_id = save_trade(trade_data)
+            mark_signal_handled(signal_id)
+
+            direction = pending.get("direction", "?")
+            entry     = pending.get("entry", 0)
+            sl        = pending.get("stop_loss", 0)
+            tp1       = pending.get("take_profit_1", 0)
+            emoji     = "🟢" if direction == "BUY" else "🔴"
+
+            await update.message.reply_text(
+                f"✅ *Trade ouvert dans votre journal !*\n\n"
+                f"{emoji} {direction} XAUUSD — Trade #{trade_id}\n"
+                f"📍 Entrée : ${entry:.2f}\n"
+                f"🛑 SL : ${sl:.2f} | 🎯 TP1 : ${tp1:.2f}\n\n"
+                f"_Le suivi automatique vérifie le prix toutes les 30s._",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            logger.info(f"Trade #{trade_id} created via Telegram OUI response (chat_id={chat_id})")
+
+        else:  # non / no
+            mark_signal_handled(signal_id)
+            await update.message.reply_text(
+                "⏭️ *Signal ignoré.*\nProchain signal à 14h00 UTC.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            logger.info(f"Signal {signal_id} ignored via Telegram NON response (chat_id={chat_id})")
+
+    except Exception as e:
+        logger.error(f"handle_signal_response error: {e}")
+        await update.message.reply_text(f"❌ Erreur lors du traitement : {e}")

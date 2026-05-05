@@ -441,6 +441,76 @@ async def _monitor_trades():
         logger.error(f"_monitor_trades error: {e}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# INTERACTIVE SIGNAL ALERT (8h05 + 14h00 UTC)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _send_interactive_signal_alert():
+    """
+    Run a full analysis. If BUY/SELL with confluence ≥ 60%, send a formatted
+    Telegram alert asking OUI/NON and persist it as a pending_signal in the DB.
+    """
+    if not _telegram_app or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        from backend.services.ai_analyst import run_analysis
+        from backend.database import save_pending_signal
+
+        logger.info("Interactive signal alert: running analysis…")
+        result = await run_analysis()
+
+        direction      = result.get("direction")
+        confluence     = result.get("confluence_score", 0) or 0
+        confidence     = result.get("confidence", 0) or 0
+        entry          = result.get("entry")
+        sl             = result.get("stop_loss")
+        tp1            = result.get("take_profit_1")
+        tp2            = result.get("take_profit_2")
+        rr             = result.get("risk_reward")
+        summary        = result.get("market_summary", "")
+        signal_level   = result.get("signal_level", "WEAK")
+
+        if direction not in ("BUY", "SELL") or confluence < 60 or not entry:
+            logger.info(f"Interactive alert skipped: {direction} confluence={confluence}%")
+            return
+
+        emoji = "🟢" if direction == "BUY" else "🔴"
+        justif = summary[:200] if summary else "Analyse en cours."
+
+        msg = (
+            f"⚡ *SIGNAL XAUUSD — {direction}*\n\n"
+            f"📍 Entrée : ${entry:.2f}\n"
+            f"🛑 Stop Loss : ${sl:.2f}\n"
+            f"🎯 TP1 : ${tp1:.2f} | TP2 : ${tp2:.2f}\n"
+            f"📊 R/R : 1:{rr} | Confiance : {confidence}%\n"
+            f"📈 Confluence : {confluence}% ({signal_level})\n\n"
+            f"💡 _{justif}_\n\n"
+            f"Répondez *OUI* pour ouvrir ce trade dans votre journal\n"
+            f"Répondez *NON* pour ignorer _(timeout 30min)_"
+        )
+
+        # Persist signal for the bot handler to read
+        signal_payload = {
+            "direction":     direction,
+            "entry":         entry,
+            "stop_loss":     sl,
+            "take_profit_1": tp1,
+            "take_profit_2": tp2,
+            "risk_reward":   rr,
+            "confluence_score": confluence,
+            "confidence":    confidence,
+            "signal_level":  signal_level,
+            "market_summary": summary,
+        }
+        save_pending_signal(int(TELEGRAM_CHAT_ID), signal_payload, timeout_minutes=30)
+
+        await _send_telegram_alert(msg)
+        logger.info(f"Interactive signal sent: {direction} confluence={confluence}%")
+
+    except Exception as e:
+        logger.error(f"_send_interactive_signal_alert error: {e}")
+
+
 def start_scheduler(telegram_app=None):
     if telegram_app:
         set_telegram_app(telegram_app)
@@ -486,6 +556,16 @@ def start_scheduler(telegram_app=None):
         CronTrigger(hour=8, minute=0, timezone="UTC"),
         id="daily_briefing", replace_existing=True, max_instances=1,
     )
+    scheduler.add_job(
+        _send_interactive_signal_alert,
+        CronTrigger(hour=8, minute=5, timezone="UTC"),
+        id="interactive_signal_morning", replace_existing=True, max_instances=1,
+    )
+    scheduler.add_job(
+        _send_interactive_signal_alert,
+        CronTrigger(hour=14, minute=0, timezone="UTC"),
+        id="interactive_signal_afternoon", replace_existing=True, max_instances=1,
+    )
 
     scheduler.start()
-    logger.info("Scheduler started (monitor_trades/price/analysis/news/cot/sentiment/ml_report/daily_briefing).")
+    logger.info("Scheduler started (monitor_trades/price/analysis/news/cot/sentiment/ml_report/daily_briefing/interactive_signals).")

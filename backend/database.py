@@ -132,6 +132,18 @@ def init_db():
         )
     """)
 
+    # Interactive Telegram signal confirmations
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            signal_json TEXT NOT NULL,
+            sent_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            handled INTEGER DEFAULT 0
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -687,3 +699,59 @@ def get_latest_sentiment() -> dict | None:
     row = cur.fetchone()
     conn.close()
     return json.loads(row["data"]) if row else None
+
+
+# ─────────────────────────────────────────────
+# PENDING SIGNALS (interactive Telegram alerts)
+# ─────────────────────────────────────────────
+
+def save_pending_signal(chat_id: int, signal: dict, timeout_minutes: int = 30) -> int:
+    """Persist a signal waiting for OUI/NON confirmation. Returns the row id."""
+    from datetime import timedelta
+    now     = datetime.utcnow()
+    expires = now + timedelta(minutes=timeout_minutes)
+    conn = get_connection()
+    cur  = conn.cursor()
+    # Expire any previous unhandled signals for this chat
+    cur.execute(
+        "UPDATE pending_signals SET handled = 1 WHERE chat_id = ? AND handled = 0",
+        (chat_id,)
+    )
+    cur.execute(
+        "INSERT INTO pending_signals (chat_id, signal_json, sent_at, expires_at) VALUES (?,?,?,?)",
+        (chat_id, json.dumps(signal), now.isoformat(), expires.isoformat()),
+    )
+    conn.commit()
+    row_id = cur.lastrowid
+    conn.close()
+    return row_id
+
+
+def get_pending_signal(chat_id: int) -> dict | None:
+    """Return the latest unhandled, non-expired signal for a chat_id."""
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute(
+        """SELECT id, signal_json, expires_at FROM pending_signals
+           WHERE chat_id = ? AND handled = 0
+           ORDER BY id DESC LIMIT 1""",
+        (chat_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    # Check expiry
+    expires_at = datetime.fromisoformat(row["expires_at"])
+    if datetime.utcnow() > expires_at:
+        mark_signal_handled(row["id"])
+        return None
+    return {"id": row["id"], **json.loads(row["signal_json"])}
+
+
+def mark_signal_handled(signal_id: int):
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute("UPDATE pending_signals SET handled = 1 WHERE id = ?", (signal_id,))
+    conn.commit()
+    conn.close()
