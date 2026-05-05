@@ -558,12 +558,12 @@ def start_scheduler(telegram_app=None):
     )
     scheduler.add_job(
         _send_interactive_signal_alert,
-        CronTrigger(hour=8, minute=5, timezone="UTC"),
+        CronTrigger(hour=22, minute=0, timezone="UTC"),  # 08h00 AEST (UTC+10)
         id="interactive_signal_morning", replace_existing=True, max_instances=1,
     )
     scheduler.add_job(
         _send_interactive_signal_alert,
-        CronTrigger(hour=14, minute=0, timezone="UTC"),
+        CronTrigger(hour=4, minute=0, timezone="UTC"),   # 14h00 AEST (UTC+10)
         id="interactive_signal_afternoon", replace_existing=True, max_instances=1,
     )
 
