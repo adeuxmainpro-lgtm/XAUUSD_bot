@@ -5,7 +5,7 @@ from anthropic import AsyncAnthropic
 from backend.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 from backend.services.analysis_engine import build_market_context, format_context_for_prompt
 from backend.services.telegram_service import send_strong_signal
-from backend.database import save_analysis, save_chat_message, get_chat_history, get_consecutive_losses
+from backend.database import save_analysis, save_chat_message, get_chat_history
 
 logger = logging.getLogger(__name__)
 _client: AsyncAnthropic | None = None
@@ -314,23 +314,14 @@ async def run_analysis() -> dict:
             atr_pct = ctx["market"].get("atr_pct")
             rec["position_reduction"] = atr_pct is not None and atr_pct > 0.6
 
-            # Post-processing: consecutive losses → conservative mode + 4-tier position sizing
-            consec_losses = get_consecutive_losses()
+            # Post-processing: 4-tier position sizing based on signal level
             sig_level = rec.get("signal_level", "WEAK")
-            base_risk = (
-                1.0   if sig_level == "STRONG"    else
-                0.75  if sig_level == "MODERATE"  else
-                0.5   if sig_level == "WEAK"       else
+            rec["recommended_risk_pct"] = (
+                1.0   if sig_level == "STRONG"   else
+                0.75  if sig_level == "MODERATE" else
+                0.5   if sig_level == "WEAK"     else
                 0.25  # VERY_WEAK
             )
-            if consec_losses >= 2:
-                rec["recommended_risk_pct"] = min(base_risk, 0.5)
-                rec["conservative_mode"] = True
-                rec["conservative_reason"] = f"{consec_losses} pertes consécutives — mode conservateur activé"
-            else:
-                rec["recommended_risk_pct"] = base_risk
-                rec["conservative_mode"] = False
-                rec["conservative_reason"] = None
             rec["weak_signal"] = sig_level in ("WEAK", "VERY_WEAK")
 
             save_analysis(rec)
