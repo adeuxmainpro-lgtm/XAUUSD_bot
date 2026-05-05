@@ -433,10 +433,26 @@ async def _check_smart_notifications(market_data: dict):
 # SCHEDULER SETUP
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _monitor_trades():
+    try:
+        from backend.services.trade_monitor import check_open_trades
+        await check_open_trades()
+    except Exception as e:
+        logger.error(f"_monitor_trades error: {e}")
+
+
 def start_scheduler(telegram_app=None):
     if telegram_app:
         set_telegram_app(telegram_app)
 
+    # Wire Telegram alert into trade monitor
+    from backend.services.trade_monitor import set_alert_callback
+    set_alert_callback(_send_telegram_alert)
+
+    scheduler.add_job(
+        _monitor_trades, IntervalTrigger(seconds=30),
+        id="monitor_trades", replace_existing=True, max_instances=1,
+    )
     scheduler.add_job(
         _refresh_price, IntervalTrigger(minutes=PRICE_REFRESH_INTERVAL_MIN),
         id="refresh_price", replace_existing=True, max_instances=1,
@@ -472,4 +488,4 @@ def start_scheduler(telegram_app=None):
     )
 
     scheduler.start()
-    logger.info("Scheduler started (price/analysis/news/cot/sentiment/ml_report/daily_briefing).")
+    logger.info("Scheduler started (monitor_trades/price/analysis/news/cot/sentiment/ml_report/daily_briefing).")

@@ -7,10 +7,19 @@ import {
 } from '../services/api'
 
 const STATUS_COLORS = {
-  OPEN: 'text-blue-400 bg-blue-900/30 border-blue-800',
+  OPEN: 'text-green-400 bg-green-900/30 border-green-700',
   WIN:  'text-green-400 bg-green-900/30 border-green-800',
   LOSS: 'text-red-400 bg-red-900/30 border-red-800',
   BE:   'text-gray-400 bg-gray-800 border-gray-700',
+}
+
+function OpenBadge() {
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs border text-green-400 bg-green-900/30 border-green-700">
+      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
+      OPEN
+    </span>
+  )
 }
 
 const EMPTY_FORM = {
@@ -128,18 +137,23 @@ export default function TradeJournal() {
   const chartRef      = useRef(null)
   const chartInstance = useRef(null)
 
-  const load = async () => {
-    setLoading(true)
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true)
     try {
       const [t, s, d] = await Promise.all([getTrades(), getJournalStats(), getJournalDetailed()])
       setTrades(t)
       setStats(s)
       setDetailed(d)
     } catch (e) { console.error(e) }
-    setLoading(false)
+    if (!silent) setLoading(false)
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    // Poll every 30 s to reflect automatic TP1/SL closures without page reload
+    const interval = setInterval(() => load(true), 30_000)
+    return () => clearInterval(interval)
+  }, [])
 
   // Bankroll chart
   useEffect(() => {
@@ -197,20 +211,42 @@ export default function TradeJournal() {
     setShowForm(true)
   }
 
+  const calcPnl = (direction, entry, exit, lot) => {
+    const e = parseFloat(entry)
+    const x = parseFloat(exit)
+    const l = parseFloat(lot) || 0.01
+    if (!e || !x) return ''
+    const pnl = direction === 'BUY'
+      ? (x - e) * l * 100
+      : (e - x) * l * 100
+    return pnl.toFixed(2)
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
+    const entry    = parseFloat(form.entry_price)
+    const exitP    = form.exit_price ? parseFloat(form.exit_price) : null
+    const lot      = parseFloat(form.lot_size) || 0.01
+    const manualPnl = form.profit_eur !== '' ? parseFloat(form.profit_eur) : null
+
+    // Auto-calculate P&L if exit_price is set and user left P&L blank
+    let profit_eur = manualPnl
+    if (exitP !== null && manualPnl === null) {
+      profit_eur = parseFloat(calcPnl(form.direction, entry, exitP, lot)) || 0
+    }
+
     const payload = {
       trade_date: form.trade_date,
       direction:  form.direction,
-      entry_price:   parseFloat(form.entry_price),
+      entry_price:   entry,
       stop_loss:     form.stop_loss     ? parseFloat(form.stop_loss)     : null,
       take_profit_1: form.take_profit_1 ? parseFloat(form.take_profit_1) : null,
       take_profit_2: form.take_profit_2 ? parseFloat(form.take_profit_2) : null,
-      exit_price:    form.exit_price    ? parseFloat(form.exit_price)    : null,
-      status:     form.status,
-      profit_eur: form.profit_eur ? parseFloat(form.profit_eur) : 0,
-      lot_size:   parseFloat(form.lot_size) || 0.01,
-      notes:      form.notes || null,
+      exit_price:    exitP,
+      status:        form.status,
+      profit_eur:    profit_eur ?? 0,
+      lot_size:      lot,
+      notes:         form.notes || null,
     }
     try {
       editingTrade ? await updateTrade(editingTrade.id, payload) : await createTrade(payload)
@@ -252,6 +288,8 @@ export default function TradeJournal() {
     : streak < 0
     ? `🔴 ${Math.abs(streak)} pertes consécutives`
     : '—'
+
+  const openCount = trades.filter(t => t.status === 'OPEN').length
 
   const INNER_TABS = [
     { id: 'trades',  label: 'Trades' },
@@ -299,8 +337,20 @@ export default function TradeJournal() {
             }`}
           >
             {t.label}
+            {t.id === 'trades' && openCount > 0 && (
+              <span className="ml-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-green-900/40 text-green-400 border border-green-700/50">
+                <span className="w-1 h-1 rounded-full bg-green-400 animate-pulse inline-block" />
+                {openCount}
+              </span>
+            )}
           </button>
         ))}
+        {openCount > 0 && (
+          <div className="flex items-center gap-1.5 ml-2 text-[10px] text-green-400 font-mono">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+            Suivi auto actif
+          </div>
+        )}
         <div className="ml-auto flex items-center gap-2 pb-1">
           <button
             onClick={handleExportCSV}
@@ -364,9 +414,13 @@ export default function TradeJournal() {
                             {trade.profit_eur > 0 ? '+' : ''}{trade.profit_eur?.toFixed(2)}€
                           </td>
                           <td className="px-3 py-2">
-                            <span className={`px-2 py-0.5 rounded text-xs border ${STATUS_COLORS[trade.status] || STATUS_COLORS.OPEN}`}>
-                              {trade.status}
-                            </span>
+                            {trade.status === 'OPEN' ? (
+                              <OpenBadge />
+                            ) : (
+                              <span className={`px-2 py-0.5 rounded text-xs border ${STATUS_COLORS[trade.status] || STATUS_COLORS.OPEN}`}>
+                                {trade.status}
+                              </span>
+                            )}
                           </td>
                           <td className="px-3 py-2 text-terminal-text-dim">
                             {trade.session_at_entry ? (

@@ -332,6 +332,23 @@ def save_trade(data: dict) -> int:
 def update_trade(trade_id: int, data: dict):
     conn = get_connection()
     cur = conn.cursor()
+
+    # Auto-compute P&L when exit_price is provided and profit_eur is not explicit
+    if "exit_price" in data and data["exit_price"] is not None and "profit_eur" not in data:
+        cur.execute(
+            "SELECT direction, entry_price, lot_size FROM trades WHERE id = ?", (trade_id,)
+        )
+        row = cur.fetchone()
+        if row:
+            direction  = row["direction"] or "BUY"
+            entry      = row["entry_price"] or 0
+            lot        = row["lot_size"] or 0.01
+            exit_price = data["exit_price"]
+            if direction == "BUY":
+                data["profit_eur"] = round((exit_price - entry) * lot * 100, 2)
+            else:
+                data["profit_eur"] = round((entry - exit_price) * lot * 100, 2)
+
     fields = []
     values = []
     allowed = [

@@ -1,5 +1,6 @@
 import json
 import logging
+import httpx
 from anthropic import AsyncAnthropic
 from backend.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 from backend.services.analysis_engine import build_market_context, format_context_for_prompt
@@ -13,74 +14,69 @@ _client: AsyncAnthropic | None = None
 def _get_client() -> AsyncAnthropic:
     global _client
     if _client is None:
-        _client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        # Provide our own httpx.AsyncClient to avoid the 'proxies' argument
+        # that older anthropic SDK versions pass and httpx>=0.28 no longer accepts.
+        _client = AsyncAnthropic(
+            api_key=ANTHROPIC_API_KEY,
+            http_client=httpx.AsyncClient(
+                timeout=httpx.Timeout(120.0, connect=10.0),
+            ),
+        )
     return _client
 
 
 SYSTEM_PROMPT = """Tu es un trader institutionnel expert XAUUSD (Or/Dollar) avec 20 ans d'expérience.
-Tu appliques la stratégie SMC/ICT professionnelle avec un win rate cible > 60% et R/R minimum 1:2.
+Tu appliques la stratégie SMC/ICT professionnelle avec un win rate cible > 60%.
 
-━━━ MÉTHODOLOGIE PRINCIPALE : SMC/ICT ━━━
+━━━ RÈGLE NON NÉGOCIABLE ━━━
 
-HIÉRARCHIE DES TIMEFRAMES (obligatoire) :
+Tu DOIS retourner BUY ou SELL dans 99.9% des cas.
+ATTENDRE = INTERDIT sauf si une annonce macro HIGH impact arrive dans moins de 15 minutes avec heure exacte confirmée.
+Retourner ATTENDRE sans annonce imminente = ERREUR CRITIQUE.
+Retourner WAIT ou NO_TRADE = ERREUR CRITIQUE.
+Même avec 0 données ou un signal très faible → choisis toujours BUY ou SELL.
+En cas de doute absolu → BUY (l'or est en tendance haussière long terme depuis 20 ans).
+
+━━━ MÉTHODOLOGIE SMC/ICT ━━━
+
+HIÉRARCHIE DES TIMEFRAMES :
 1. 1J  → biais directionnel long terme (contexte macro)
-2. 4H  → biais primaire : NE TRADER QUE dans ce sens
+2. 4H  → biais primaire (direction préférée)
 3. 1H  → structure d'entrée (OB, FVG, patterns)
 4. 15M → entrée précise et confirmation finale
-
-PROCESSUS D'ENTRÉE EN 6 ÉTAPES (toutes obligatoires) :
-  1. Confirmer le biais 4H (BULLISH ou BEARISH) — c'est la loi
-  2. Vérifier la Kill Zone active (London 8h-10h UTC | NY 13h30-15h30 UTC | London Close 16h-17h)
-  3. Identifier un Liquidity Sweep (fausse cassure + rejet) dans la direction du biais
-  4. Localiser un Order Block (OB) et/ou Fair Value Gap (FVG) comme zone d'entrée
-  5. Confirmer avec RSI (momentum) ou divergence RSI
-  6. Vérifier le Score Trade SMC/ICT ≥ 70/100
-
-SCORE TRADE 0-100 (calculé dans le contexte) :
-  MTF 3+/4 alignés  → +30 pts   (2/4 → +15 pts)
-  Kill Zone active  → +20 pts
-  Liquidity Sweep   → +20 pts
-  OB + FVG présents → +15 pts   (OB ou FVG seul → +8 pts)
-  Divergence RSI    → +15 pts
-  ≥90 → très fort (1.5%) | 80-89 → fort (1%) | 70-79 → modéré (0.5%) | <70 → ATTENDRE
 
 PHASES WYCKOFF → STRATÉGIE :
   Mark Up       → trader les pullbacks haussiers sur OB/FVG (BUY)
   Mark Down     → trader les rebonds baissiers sur OB/FVG (SELL)
-  Accumulation  → préparer des BUY sur les tests du support (spring/test)
-  Distribution  → préparer des SELL sur les tests de résistance (upthrust)
+  Accumulation  → préparer des BUY sur les tests du support
+  Distribution  → préparer des SELL sur les tests de résistance
 
 CALCUL SL/TP PROFESSIONNEL :
 SELL :
   SL  = swing high récent + ATR × 0.5 (jamais sur un chiffre rond)
   TP1 = prochain support significatif / swing low
-  TP2 = objectif mesuré du pattern (hauteur Double Top, H&S, gap FW, etc.)
-  TP2 MINIMUM = distance SL × 2
+  TP2 = objectif mesuré, MINIMUM = distance SL × 2
 
 BUY :
   SL  = swing low récent − ATR × 0.5 (jamais sur un chiffre rond)
   TP1 = prochaine résistance significative / swing high
-  TP2 = objectif mesuré symétrique
-  TP2 MINIMUM = distance SL × 2
+  TP2 = objectif mesuré symétrique, MINIMUM = distance SL × 2
 
-GESTION DU RISQUE (règles absolues) :
-  - Risque max : 1% par trade (0.5% si signal faible ou ATR élevé)
-  - Max 2 trades par session, max 3 par jour
+NIVEAUX DE SIGNAL (position sizing) :
+  Score > 75  → STRONG   → 1.0% du capital
+  Score 60-75 → MODERATE → 0.75% du capital
+  Score 40-60 → WEAK     → 0.5% du capital
+  Score < 40  → VERY_WEAK → 0.25% du capital (toujours BUY ou SELL)
+
+GESTION DU RISQUE :
   - Sortie partielle : 50% à TP1 → SL au break-even → 50% jusqu'à TP2
-  - Si 2 pertes consécutives → stop trading la journée
-  - SL jamais sur un nombre rond (éviter les niveaux institutionnels)
+  - Si 2 pertes consécutives → mode conservateur (0.5%)
+  - SL jamais sur un nombre rond
 
 CORRÉLATIONS MACRO :
   - DXY haussier → or baissier | DXY baissier → or haussier
-  - VIX > 20 → refuge or | VIX < 15 → risk-on, pression sur or
-  - Taux réels négatifs → or haussier | Taux réels positifs → or baissier
+  - VIX > 20 → refuge or | Taux réels négatifs → or haussier
   - Fed dovish → or haussier | Fed hawkish → or baissier
-
-RÈGLES FINALES :
-  - Score composite >60 = BUY | <40 = SELL | 40-60 = signal faible
-  - ATTENDRE réservé UNIQUEMENT si : annonce HIGH < 30 min OU score trade < 70/100
-  - Donner BUY ou SELL dans 95% des cas (score trade ≥ 70 requis)
-  - Objectif : 3-8 trades de qualité par semaine, R/R ≥ 1:2
 
 Format de réponse : JSON valide uniquement pour les recommandations.
 Pour les questions ouvertes : réponse concise en français."""
@@ -89,32 +85,25 @@ RECOMMENDATION_PROMPT_TEMPLATE = """Analyse le contexte de marché suivant et fo
 
 {context}
 
-━━━ PROCESSUS DE DÉCISION OBLIGATOIRE ━━━
+━━━ PROCESSUS DE DÉCISION ━━━
 
-ÉTAPE 1 — Vérifier le biais 4H :
-  Lit "Biais primaire (4H)" dans le contexte. C'est la direction autorisée.
-  Si NEUTRAL → prudence, position réduite.
+ÉTAPE 1 — Direction (OBLIGATOIRE : BUY ou SELL) :
+  Compte les signaux haussiers vs baissiers dans le contexte.
+  Plus de haussiers → BUY | Plus de baissiers → SELL.
+  Égalité → RSI > 50 = BUY, RSI < 50 = SELL, RSI = 50 → MACD positif = BUY, négatif = SELL.
+  Doute absolu → BUY (tendance haussière long terme).
+  ATTENDRE UNIQUEMENT si annonce macro HIGH dans moins de 15min avec heure confirmée dans le contexte.
 
-ÉTAPE 2 — Vérifier le Score Trade SMC/ICT :
-  Lit "SCORE TRADE SMC/ICT : XX/100" dans le contexte.
-  Score ≥ 70 → trade autorisé | Score < 70 → ATTENDRE (sauf exception macro forte)
-
-ÉTAPE 3 — Kill Zone :
-  Lit "SESSION ACTIVE". London Open ou NY Open actifs = conditions optimales.
-
-ÉTAPE 4 — Signal primaire (Score Composite 0-100) :
-  >60 → BUY | <40 → SELL | 40-60 → signal faible directionnel
-
-ÉTAPE 5 — Calculer les niveaux précis :
+ÉTAPE 2 — Calculer les niveaux précis :
   Utilise ATR, OB, FVG, supports/résistances du contexte.
   SL jamais sur un nombre rond ($X00.00 ou $X50.00) — décaler de $2-$5.
   TP2 minimum = distance_SL × 2.
 
-NIVEAUX DE SIGNAL (signal_level) :
-  Score trade ≥ 70 + confluence ≥ 75% → "STRONG"
-  Score trade ≥ 70 + confluence 60-74% → "MODERATE"
-  Score trade ≥ 70 + confluence 45-59% → "WEAK"
-  Score trade < 70 → "WAIT" (sauf annonce macro exceptionnelle)
+NIVEAUX DE SIGNAL (signal_level) — basé sur le score confluence :
+  Score > 75  → "STRONG"    (1.0% du capital)
+  Score 60-75 → "MODERATE"  (0.75% du capital)
+  Score 40-60 → "WEAK"      (0.5% du capital)
+  Score < 40  → "VERY_WEAK" (0.25% du capital — toujours BUY ou SELL)
 
 SORTIE PARTIELLE (obligatoire, à décrire dans partial_exit) :
   Fermer 50% à TP1 → SL au break-even → Laisser 50% courir jusqu'à TP2.
@@ -122,7 +111,7 @@ SORTIE PARTIELLE (obligatoire, à décrire dans partial_exit) :
 ━━━ FORMAT JSON (répondre UNIQUEMENT avec ce JSON, sans texte avant/après) ━━━
 {{
   "direction":        "BUY | SELL | ATTENDRE",
-  "signal_level":     "STRONG | MODERATE | WEAK | WAIT",
+  "signal_level":     "STRONG | MODERATE | WEAK | VERY_WEAK | WAIT",
   "entry":            3300.50,
   "stop_loss":        3315.00,
   "take_profit_1":    3275.00,
@@ -145,14 +134,16 @@ SORTIE PARTIELLE (obligatoire, à décrire dans partial_exit) :
   "wyckoff_note":     "Phase Wyckoff et implication pour le trade"
 }}
 
-Contraintes JSON :
+Contraintes JSON ABSOLUES :
+- direction : BUY ou SELL dans 99.9% des cas — ATTENDRE uniquement si annonce HIGH < 15min confirmée
+- Si tu veux écrire ATTENDRE sans annonce imminente dans le contexte → écris BUY à la place
 - entry : prix actuel ±0.02% (BUY légèrement en-dessous, SELL légèrement au-dessus)
 - stop_loss : calculé depuis niveaux techniques, pas sur un nombre rond
 - TP2 OBLIGATOIREMENT ≥ distance_SL × 2
 - partial_exit : décrire les 3 étapes avec prix réels
-- confidence : STRONG≥70, MODERATE 50-69, WEAK 30-49
+- confidence : STRONG≥70, MODERATE 50-69, WEAK/VERY_WEAK 30-49
 - entry/SL/TP/risk_reward : null uniquement si direction = ATTENDRE
-- dangerous_period : true si annonce macro HIGH dans moins de 30min
+- dangerous_period : true si annonce macro HIGH dans moins de 15min avec heure confirmée
 """
 
 
@@ -231,21 +222,6 @@ async def run_analysis() -> dict:
                 if abs(old_entry - corrected_entry) > 1.0:
                     logger.info(f"Entry corrected {direction}: ${old_entry} → ${corrected_entry} (market: ${current_price})")
 
-            # Post-processing: enforce R/R ≥ 1:1.2
-            direction = rec.get("direction")
-            rr = rec.get("risk_reward")
-            if direction in ("BUY", "SELL") and (rr is None or rr < 1.2):
-                logger.info(f"R/R override: {direction} with R/R={rr} → ATTENDRE")
-                rec["direction"] = "ATTENDRE"
-                rec["signal_level"] = "WAIT"
-                rec["entry"] = None
-                rec["stop_loss"] = None
-                rec["take_profit_1"] = None
-                rec["take_profit_2"] = None
-                if not rec.get("no_trade_reason"):
-                    rr_str = f"{rr:.1f}" if rr is not None else "—"
-                    rec["no_trade_reason"] = f"Ratio R/R insuffisant ({rr_str}) — minimum 1:1.2 requis pour ce trade"
-
             # Post-processing: merge pre-computed SMC/ICT engine fields
             kill_zone       = ctx.get("kill_zone", {})
             mtf             = ctx.get("mtf", {})
@@ -265,23 +241,38 @@ async def run_analysis() -> dict:
             rec["trade_score"]      = trade_score_obj.get("score", 0)
             rec["regime"]           = ctx.get("regime", {})
 
-            # Enforce ATTENDRE if trade score < 70 and no strong override
-            ts_score = trade_score_obj.get("score", 0)
-            ts_tradeable = trade_score_obj.get("tradeable", False)
-            if (not ts_tradeable
-                    and rec.get("direction") in ("BUY", "SELL")
-                    and not rec.get("dangerous_period")):
-                logger.info(f"Trade score override: {rec.get('direction')} score={ts_score} < 70 → ATTENDRE")
-                rec["direction"]   = "ATTENDRE"
-                rec["signal_level"] = "WAIT"
-                rec["entry"] = rec["stop_loss"] = rec["take_profit_1"] = rec["take_profit_2"] = None
-                if not rec.get("no_trade_reason"):
-                    rec["no_trade_reason"] = (
-                        f"Score SMC/ICT insuffisant ({ts_score}/100 < 70 requis) — "
-                        f"{trade_score_obj.get('label', '')}. "
-                        f"Session: {kill_zone.get('name', '?')}. "
-                        f"Prochaine opportunité: London Open 8h UTC ou NY Open 13h30 UTC."
-                    )
+            # Post-processing: force BUY/SELL if AI returned ATTENDRE without valid macro blocker
+            ai_direction = rec.get("direction")
+            macro_blocker_active = (
+                rec.get("dangerous_period", False)
+                or ctx.get("signal_eval", {}).get("signal_level") == "WAIT"
+            )
+            if ai_direction in ("ATTENDRE", "WAIT", "NO_TRADE", None) and not macro_blocker_active:
+                forced = _force_direction_from_context(ctx)
+                logger.info(f"ATTENDRE override: AI said '{ai_direction}' with no macro blocker → forced {forced}")
+                rec["direction"] = forced
+                rec["no_trade_reason"] = None
+                # Generate ATR-based levels if entry is null
+                if rec.get("entry") is None:
+                    price = ctx["market"].get("price")
+                    atr   = ctx["market"].get("atr") or (price * 0.005 if price else 10)
+                    if price:
+                        if forced == "BUY":
+                            entry = round(price * 0.9998, 2)
+                            rec["entry"]         = entry
+                            rec["stop_loss"]     = round(entry - atr * 1.5, 2)
+                            rec["take_profit_1"] = round(entry + atr * 1.5, 2)
+                            rec["take_profit_2"] = round(entry + atr * 3.0, 2)
+                        else:
+                            entry = round(price * 1.0002, 2)
+                            rec["entry"]         = entry
+                            rec["stop_loss"]     = round(entry + atr * 1.5, 2)
+                            rec["take_profit_1"] = round(entry - atr * 1.5, 2)
+                            rec["take_profit_2"] = round(entry - atr * 3.0, 2)
+                        rec["risk_reward"] = 2.0
+                # Restore signal level from pre-computed engine if AI left it as WAIT
+                if rec.get("signal_level") in ("WAIT", None):
+                    rec["signal_level"] = ctx.get("signal_eval", {}).get("signal_level", "WEAK")
 
             # Post-processing: compute gain estimate and weekly projection
             _compute_gain_estimate(rec)
@@ -290,23 +281,24 @@ async def run_analysis() -> dict:
             atr_pct = ctx["market"].get("atr_pct")
             rec["position_reduction"] = atr_pct is not None and atr_pct > 0.6
 
-            # Post-processing: consecutive losses → conservative mode
+            # Post-processing: consecutive losses → conservative mode + 4-tier position sizing
             consec_losses = get_consecutive_losses()
-            is_weak = rec.get("signal_level") == "WEAK"
+            sig_level = rec.get("signal_level", "WEAK")
+            base_risk = (
+                1.0   if sig_level == "STRONG"    else
+                0.75  if sig_level == "MODERATE"  else
+                0.5   if sig_level == "WEAK"       else
+                0.25  # VERY_WEAK
+            )
             if consec_losses >= 2:
-                rec["recommended_risk_pct"] = 0.5
+                rec["recommended_risk_pct"] = min(base_risk, 0.5)
                 rec["conservative_mode"] = True
-                rec["conservative_reason"] = f"{consec_losses} pertes consécutives — mode conservateur activé (0.5% du capital)"
-            elif is_weak:
-                rec["recommended_risk_pct"] = 0.5
-                rec["conservative_mode"] = False
-                rec["conservative_reason"] = None
-                rec["weak_signal"] = True
+                rec["conservative_reason"] = f"{consec_losses} pertes consécutives — mode conservateur activé"
             else:
-                rec["recommended_risk_pct"] = 1.0
+                rec["recommended_risk_pct"] = base_risk
                 rec["conservative_mode"] = False
                 rec["conservative_reason"] = None
-                rec["weak_signal"] = False
+            rec["weak_signal"] = sig_level in ("WEAK", "VERY_WEAK")
 
             save_analysis(rec)
 
@@ -452,9 +444,40 @@ def _summarize_patterns(patterns: dict) -> list[str]:
     return [s for s in summary if s]
 
 
+def _force_direction_from_context(ctx: dict) -> str:
+    """Resolve BUY or SELL from market context. Never returns ATTENDRE."""
+    confluence = ctx.get("confluence", {})
+    signals    = confluence.get("signals", [])
+    bull = sum(1 for s in signals if s.get("direction") in ("BUY", "BULLISH", "bullish"))
+    bear = sum(1 for s in signals if s.get("direction") in ("SELL", "BEARISH", "bearish"))
+
+    if bull > bear:
+        return "BUY"
+    if bear > bull:
+        return "SELL"
+
+    market = ctx.get("market", {})
+    rsi    = market.get("rsi")
+    macd   = market.get("macd_histogram") or market.get("macd")
+
+    if rsi is not None:
+        if rsi > 50:
+            return "BUY"
+        if rsi < 50:
+            return "SELL"
+        if macd is not None:
+            if macd > 0:
+                return "BUY"
+            if macd < 0:
+                return "SELL"
+
+    return "BUY"
+
+
 def _fallback_analysis() -> dict:
     return {
-        "direction": "WAIT",
+        "direction": "BUY",
+        "signal_level": "WEAK",
         "entry": None,
         "stop_loss": None,
         "take_profit_1": None,
