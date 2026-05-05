@@ -12,17 +12,20 @@ from backend.services.smc_engine import (
 )
 from backend.services.regime_detector import detect_regime
 from backend.database import get_latest_news, get_latest_cot, get_latest_sentiment, get_closed_trades_for_learning
+from backend.services.forex_factory_service import fetch_high_impact_events, is_high_impact_imminent
 
 logger = logging.getLogger(__name__)
 
 
 async def build_market_context() -> dict:
     """Assemble full market context: price, macro, news, patterns, COT, sentiment, trade history."""
-    market, macro, fg, new_sources = await asyncio.gather(
+    market, macro, fg, new_sources, ff_events, ff_imminent = await asyncio.gather(
         get_full_market_data(),
         get_macro_context(),
         fetch_fear_greed(),
         fetch_all_new_sources(),
+        fetch_high_impact_events(),
+        is_high_impact_imminent(hours=2),
         return_exceptions=True,
     )
 
@@ -38,6 +41,11 @@ async def build_market_context() -> dict:
     if isinstance(new_sources, Exception):
         logger.warning(f"New sources error: {new_sources}")
         new_sources = {}
+    if isinstance(ff_events, Exception):
+        logger.warning(f"Forex Factory error: {ff_events}")
+        ff_events = []
+    if isinstance(ff_imminent, Exception):
+        ff_imminent = None
 
     # Patterns from 1h OHLC
     patterns: dict = {}
@@ -148,6 +156,9 @@ async def build_market_context() -> dict:
         "rsi_divergence":  rsi_divergence,
         "trade_score_obj": trade_score_obj,
         "regime":          regime,
+        # Economic calendar
+        "ff_events":       ff_events,
+        "ff_imminent":     ff_imminent,
     }
 
 
@@ -286,6 +297,32 @@ def format_context_for_prompt(ctx: dict) -> str:
         lines.append(f"NFP: +{macro['nfp_change_k']:.0f}K emplois")
     if macro.get("dxy") is not None:
         lines.append(f"DXY: {macro['dxy']:.3f}")
+    if macro.get("us10y") is not None:
+        us10y = macro["us10y"]
+        real_yield_note = "↑ pression baissière sur l'or" if us10y > 4.5 else ("↓ soutien à l'or" if us10y < 3.5 else "neutre")
+        lines.append(f"Taux 10Y US (DGS10): {us10y:.3f}% — {real_yield_note}")
+    if macro.get("dxy_fred") is not None:
+        lines.append(f"Dollar Index large (DTWEXBGS/FRED): {macro['dxy_fred']:.2f}")
+
+    # ── Forex Factory Economic Calendar ──
+    ff_events  = ctx.get("ff_events", [])
+    ff_imminent = ctx.get("ff_imminent")
+
+    if ff_imminent:
+        ev = ff_imminent
+        lines.append(f"\n⛔ ALERTE CALENDRIER — ÉVÉNEMENT HIGH IMPACT IMMINENT :")
+        lines.append(f"  {ev['title']} dans {ev['hours_until']:.1f}h ({ev.get('time','?')} UTC)")
+        lines.append(f"  → RÈGLE : NE PAS OUVRIR DE TRADE — attendre la publication et la digestion")
+
+    upcoming_2h = [e for e in ff_events if 0 < e.get("hours_until", 99) <= 2]
+    upcoming_24h = [e for e in ff_events if 2 < e.get("hours_until", 99) <= 24]
+
+    if upcoming_2h or upcoming_24h:
+        lines.append("\n--- CALENDRIER ÉCONOMIQUE HIGH IMPACT (USD) ---")
+        for e in upcoming_2h:
+            lines.append(f"  ⚠️ DANS {e['hours_until']:.1f}H : {e['title']} ({e.get('time','?')} UTC)")
+        for e in upcoming_24h[:4]:
+            lines.append(f"  📅 Dans {e['hours_until']:.0f}h : {e['title']} ({e.get('time','?')} UTC)")
 
     # ── COT ──
     if cot and not cot.get("error"):

@@ -67,6 +67,16 @@ async def fetch_fed_rate() -> float | None:
     return await _fred_series_latest("FEDFUNDS")
 
 
+async def fetch_us10y() -> float | None:
+    """10-year US Treasury yield (DGS10) from FRED — daily series."""
+    return await _fred_series_latest("DGS10")
+
+
+async def fetch_dxy_fred() -> float | None:
+    """Trade-weighted US Dollar Index broad (DTWEXBGS) from FRED — weekly series."""
+    return await _fred_series_latest("DTWEXBGS")
+
+
 async def fetch_cpi() -> float | None:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -254,12 +264,14 @@ def _generate_gold_summary(
 
 
 async def get_macro_context() -> dict:
-    """Agrège toutes les données macro (ancien format compatible market_data)."""
-    fed_rate, cpi, nfp, dxy = await asyncio.gather(
+    """Agrège toutes les données macro (Fed rate, CPI, NFP, DXY, DGS10, DTWEXBGS)."""
+    results = await asyncio.gather(
         fetch_fed_rate(),
         fetch_cpi(),
         fetch_nfp(),
         fetch_dxy(),
+        fetch_us10y(),
+        fetch_dxy_fred(),
         return_exceptions=True,
     )
 
@@ -267,10 +279,12 @@ async def get_macro_context() -> dict:
         return val if not isinstance(val, Exception) else None
 
     return {
-        "fed_rate": safe(fed_rate),
-        "cpi_yoy": safe(cpi),
-        "nfp_change_k": safe(nfp),
-        "dxy": safe(dxy),
+        "fed_rate":     safe(results[0]),
+        "cpi_yoy":      safe(results[1]),
+        "nfp_change_k": safe(results[2]),
+        "dxy":          safe(results[3]),
+        "us10y":        safe(results[4]),   # DGS10 — 10-year Treasury yield
+        "dxy_fred":     safe(results[5]),   # DTWEXBGS — broad dollar index
     }
 
 
@@ -288,6 +302,8 @@ async def get_enriched_macro() -> dict:
         fetch_dxy(),
         _fetch_dxy_history(),
         _fetch_next_macro_event(),
+        fetch_us10y(),
+        fetch_dxy_fred(),
         return_exceptions=True,
     )
 
@@ -300,6 +316,8 @@ async def get_enriched_macro() -> dict:
     dxy = safe(results[3])
     dxy_history = safe(results[4]) or []
     next_event = safe(results[5])
+    us10y = safe(results[6])
+    dxy_fred = safe(results[7])
 
     # FED
     fed_rate = fed_values[0] if fed_values else None
@@ -324,14 +342,16 @@ async def get_enriched_macro() -> dict:
     gold_summary = _generate_gold_summary(fed_trend, fed_rate, cpi_trend, cpi_yoy, dxy_trend, dxy)
 
     data = {
-        "fed_rate": fed_rate,
-        "fed_trend": fed_trend,
-        "cpi_yoy": cpi_yoy,
-        "cpi_trend": cpi_trend,
+        "fed_rate":     fed_rate,
+        "fed_trend":    fed_trend,
+        "cpi_yoy":      cpi_yoy,
+        "cpi_trend":    cpi_trend,
         "nfp_change_k": nfp,
-        "dxy": dxy,
-        "dxy_trend": dxy_trend,
-        "next_event": next_event,
+        "dxy":          dxy,
+        "dxy_trend":    dxy_trend,
+        "us10y":        us10y,    # 10-year Treasury yield (DGS10)
+        "dxy_fred":     dxy_fred, # Broad dollar index (DTWEXBGS)
+        "next_event":   next_event,
         "gold_summary": gold_summary,
     }
 
