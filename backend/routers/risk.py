@@ -10,7 +10,8 @@ logger = logging.getLogger(__name__)
 
 class RiskRequest(BaseModel):
     bankroll_eur: float = Field(..., gt=0, description="Capital en euros")
-    risk_level: str = Field("normal", description="low | normal | aggressive")
+    risk_level: str = Field("normal", description="low | normal | aggressive (ignoré si risk_pct fourni)")
+    risk_pct: float | None = Field(None, gt=0, le=100, description="Risque libre en % (ex: 1.5). Prioritaire sur risk_level.")
     stop_loss_pips: float = Field(..., gt=0, description="Distance stop loss en USD/oz")
     entry_price: float = Field(..., gt=0, description="Prix d'entrée en USD")
     take_profit_1: float | None = Field(None, description="TP1 en USD")
@@ -20,12 +21,10 @@ class RiskRequest(BaseModel):
 @router.post("/calculate")
 async def calculate_risk(req: RiskRequest):
     """Calcule le dimensionnement de position."""
-    if req.risk_level not in ["low", "normal", "aggressive"]:
-        raise HTTPException(status_code=400, detail="risk_level must be low, normal or aggressive")
-
     result = calculate_position(
         bankroll_eur=req.bankroll_eur,
         risk_level=req.risk_level,
+        risk_pct_override=req.risk_pct,
         stop_loss_pips=req.stop_loss_pips,
         entry_price=req.entry_price,
         take_profit_1=req.take_profit_1,

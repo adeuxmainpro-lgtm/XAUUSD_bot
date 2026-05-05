@@ -1,12 +1,6 @@
 import React, { useState } from 'react'
 import { calculateRisk } from '../services/api'
 
-const RISK_LEVELS = [
-  { value: 'low',        label: 'Faible (0.5%)',   color: 'text-green-400' },
-  { value: 'normal',     label: 'Normal (1%)',      color: 'text-yellow-400' },
-  { value: 'aggressive', label: 'Agressif (2%)',    color: 'text-red-400' },
-]
-
 const INPUT_CLS =
   'w-full bg-terminal-surface border border-terminal-border rounded-lg px-3 py-2 text-xs font-mono text-terminal-base focus:border-gold-400/50 focus:outline-none transition-colors placeholder-terminal-text-dim'
 
@@ -24,12 +18,12 @@ function ResultRow({ label, value, highlight, positive }) {
 
 export default function RiskCalculator({ latestAnalysis }) {
   const [form, setForm] = useState({
-    bankroll:   '1000',
-    risk_level: 'normal',
-    entry:      latestAnalysis?.entry?.toFixed(2)          || '',
-    stop_loss:  latestAnalysis?.stop_loss?.toFixed(2)      || '',
-    tp1:        latestAnalysis?.take_profit_1?.toFixed(2)  || '',
-    tp2:        latestAnalysis?.take_profit_2?.toFixed(2)  || '',
+    bankroll:  '1000',
+    risk_pct:  '1',
+    entry:     latestAnalysis?.entry?.toFixed(2)         || '',
+    stop_loss: latestAnalysis?.stop_loss?.toFixed(2)     || '',
+    tp1:       latestAnalysis?.take_profit_1?.toFixed(2) || '',
+    tp2:       latestAnalysis?.take_profit_2?.toFixed(2) || '',
   })
   const [result,  setResult]  = useState(null)
   const [loading, setLoading] = useState(false)
@@ -47,13 +41,15 @@ export default function RiskCalculator({ latestAnalysis }) {
       if (!entry || !sl) throw new Error('Entrée et stop loss requis')
       const slDistance = Math.abs(entry - sl)
       if (slDistance <= 0) throw new Error('Distance SL invalide')
+      const riskPct = parseFloat(form.risk_pct)
+      if (!riskPct || riskPct <= 0 || riskPct > 100) throw new Error('Risque invalide (ex: 0.5, 1, 2.5)')
       const res = await calculateRisk({
-        bankroll_eur:  parseFloat(form.bankroll),
-        risk_level:    form.risk_level,
+        bankroll_eur:   parseFloat(form.bankroll),
+        risk_pct:       riskPct,
         stop_loss_pips: slDistance,
-        entry_price:   entry,
-        take_profit_1: form.tp1 ? parseFloat(form.tp1) : null,
-        take_profit_2: form.tp2 ? parseFloat(form.tp2) : null,
+        entry_price:    entry,
+        take_profit_1:  form.tp1 ? parseFloat(form.tp1) : null,
+        take_profit_2:  form.tp2 ? parseFloat(form.tp2) : null,
       })
       setResult(res)
     } catch (err) {
@@ -93,10 +89,9 @@ export default function RiskCalculator({ latestAnalysis }) {
               className={INPUT_CLS} placeholder="1000" min="1" required />
           </div>
           <div>
-            <label className="text-[10px] text-terminal-text-muted uppercase tracking-wide block mb-1">Risque</label>
-            <select name="risk_level" value={form.risk_level} onChange={handleChange} className={INPUT_CLS}>
-              {RISK_LEVELS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-            </select>
+            <label className="text-[10px] text-terminal-text-muted uppercase tracking-wide block mb-1">Risque (%)</label>
+            <input type="number" name="risk_pct" value={form.risk_pct} onChange={handleChange}
+              className={INPUT_CLS} placeholder="1" min="0.1" max="100" step="0.1" required />
           </div>
         </div>
 

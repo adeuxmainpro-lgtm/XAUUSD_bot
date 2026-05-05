@@ -8,22 +8,21 @@ EUR_TO_USD = 1.08  # Taux approximatif EUR/USD (sera mis à jour si disponible)
 
 def calculate_position(
     bankroll_eur: float,
-    risk_level: str,
-    stop_loss_pips: float,
-    entry_price: float,
+    risk_level: str = "normal",
+    stop_loss_pips: float = 0,
+    entry_price: float = 0,
     take_profit_1: float | None = None,
     take_profit_2: float | None = None,
+    risk_pct_override: float | None = None,
 ) -> dict:
     """
     Calcule le dimensionnement de position pour XAUUSD.
-
-    Pour l'or : 1 pip = $0.01, 1 lot standard = 100 oz
-    Valeur d'1 pip pour 1 lot = 100 * 0.01 = $1
-    Mais en pratique, le spread est en $, donc :
-    - Stop loss en $ par oz = stop_loss_pips * 0.1 (si pip = 0.1$)
-    - On utilise stop_loss_pips comme distance en USD/oz directement
+    risk_pct_override (en %, ex: 1.5) prend la priorité sur risk_level.
     """
-    risk_pct = RISK_LEVELS.get(risk_level, RISK_LEVELS["normal"])
+    if risk_pct_override is not None:
+        risk_pct = risk_pct_override / 100.0
+    else:
+        risk_pct = RISK_LEVELS.get(risk_level, RISK_LEVELS["normal"])
 
     # Montant risqué en EUR et USD
     amount_risked_eur = bankroll_eur * risk_pct
