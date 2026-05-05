@@ -9,7 +9,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from backend.config import TELEGRAM_BOT_TOKEN
 from backend.database import init_db
 from telegram_bot.handlers import (
-    cmd_start, cmd_analyse, cmd_news, cmd_risk,
+    cmd_start, cmd_analyse, cmd_trade, cmd_news, cmd_risk,
     cmd_chat, cmd_alerte, cmd_status, cmd_patterns, cmd_sentiment,
     handle_signal_response,
 )
@@ -29,6 +29,7 @@ def create_app() -> Application:
 
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("analyse",   cmd_analyse))
+    app.add_handler(CommandHandler("trade",     cmd_trade))
     app.add_handler(CommandHandler("news",      cmd_news))
     app.add_handler(CommandHandler("risk",      cmd_risk))
     app.add_handler(CommandHandler("chat",      cmd_chat))

@@ -28,6 +28,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🏅 *XAUUSD Trading Bot* — Bienvenue !\n\n"
         "Commandes disponibles :\n"
         "• /analyse — Analyse complète XAUUSD\n"
+        "• /trade — Lancer une analyse et ouvrir un trade\n"
         "• /patterns — Patterns techniques détectés\n"
         "• /sentiment — Fear & Greed + COT Report\n"
         "• /news — Actualités RSS + IA\n"
@@ -360,6 +361,77 @@ async def cmd_sentiment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# /trade — MANUAL SIGNAL + JOURNAL ENTRY
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def cmd_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Run a full analysis and ask the user if they want to open the trade."""
+    msg = await update.message.reply_text("🔍 Analyse en cours... (~30s)", parse_mode=ParseMode.MARKDOWN)
+    try:
+        from backend.services.ai_analyst import run_analysis
+        from backend.database import save_pending_signal
+
+        result = await run_analysis()
+
+        direction    = result.get("direction")
+        confidence   = result.get("confidence", 0) or 0
+        confluence   = result.get("confluence_score", 0) or 0
+        entry        = result.get("entry")
+        sl           = result.get("stop_loss")
+        tp1          = result.get("take_profit_1")
+        tp2          = result.get("take_profit_2")
+        rr           = result.get("risk_reward")
+        summary      = result.get("market_summary", "")
+        signal_level = result.get("signal_level", "WEAK")
+
+        if direction not in ("BUY", "SELL") or not entry:
+            await msg.edit_text(
+                "⚠️ *Aucun signal exploitable*\n"
+                "L'analyse n'a pas produit de signal BUY/SELL avec niveaux.\n"
+                "Réessayez dans quelques minutes.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        emoji  = "🟢" if direction == "BUY" else "🔴"
+        justif = summary[:200] if summary else "Contexte analysé."
+
+        text = (
+            f"{emoji} *SIGNAL XAUUSD — {direction}*\n\n"
+            f"📍 Entrée : ${entry:.2f}\n"
+            f"🛑 Stop Loss : ${sl:.2f}\n"
+            f"🎯 TP1 : ${tp1:.2f} | TP2 : ${tp2:.2f}\n"
+            f"📊 R/R : 1:{rr} | Confiance : {confidence}%\n"
+            f"📈 Confluence : {confluence}% ({signal_level})\n\n"
+            f"💡 _{justif}_\n\n"
+            f"Voulez-vous ouvrir ce trade dans votre journal ?\n"
+            f"Répondez *OUI* pour ouvrir | *NON* pour annuler _(timeout 30min)_"
+        )
+
+        chat_id = update.effective_chat.id
+        signal_payload = {
+            "direction":       direction,
+            "entry":           entry,
+            "stop_loss":       sl,
+            "take_profit_1":   tp1,
+            "take_profit_2":   tp2,
+            "risk_reward":     rr,
+            "confluence_score": confluence,
+            "confidence":      confidence,
+            "signal_level":    signal_level,
+            "market_summary":  summary,
+        }
+        save_pending_signal(chat_id, signal_payload, timeout_minutes=30)
+
+        await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+        logger.info(f"cmd_trade: {direction} entry=${entry} sent to chat_id={chat_id}")
+
+    except Exception as e:
+        logger.error(f"cmd_trade error: {e}")
+        await msg.edit_text(f"❌ Erreur lors de l'analyse : {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # INTERACTIVE SIGNAL RESPONSE HANDLER  (OUI / NON)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -429,7 +501,7 @@ async def handle_signal_response(update: Update, context: ContextTypes.DEFAULT_T
         else:  # non / no
             mark_signal_handled(signal_id)
             await update.message.reply_text(
-                "⏭️ *Signal ignoré.*\nProchain signal à 14h00 UTC.",
+                "⏭️ *Signal ignoré.* Tapez /trade à tout moment pour relancer une analyse.",
                 parse_mode=ParseMode.MARKDOWN,
             )
             logger.info(f"Signal {signal_id} ignored via Telegram NON response (chat_id={chat_id})")
