@@ -76,6 +76,7 @@ async def check_open_trades():
                 })
                 logger.info(f"Trade #{trade['id']} {direction}: TP1 hit at ${tp1:.2f} → WIN +{pnl}€")
                 await _notify_win(trade, tp1, pnl)
+                await _check_bankroll()
 
             elif hit_sl:
                 pnl = _calc_pnl(trade, sl)
@@ -86,9 +87,19 @@ async def check_open_trades():
                 })
                 logger.info(f"Trade #{trade['id']} {direction}: SL hit at ${sl:.2f} → LOSS {pnl}€")
                 await _notify_loss(trade, sl, pnl)
+                await _check_bankroll()
 
     except Exception as e:
         logger.error(f"check_open_trades error: {e}")
+
+
+async def _check_bankroll():
+    try:
+        from backend.database import get_bankroll
+        from backend.services.telegram_service import check_bankroll_alerts
+        await check_bankroll_alerts(get_bankroll())
+    except Exception as e:
+        logger.warning(f"bankroll alert check error: {e}")
 
 
 async def _notify_win(trade: dict, exit_price: float, pnl: float):

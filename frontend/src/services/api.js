@@ -60,5 +60,10 @@ export const getPerformance = () => api.get('/performance').then(r => r.data)
 export const getBacktest = (years = 5) =>
   api.get('/performance/backtest', { params: { years } }).then(r => r.data)
 
+// Bankroll
+export const getBankroll = () => api.get('/journal/bankroll').then(r => r.data)
+export const setInitialBankroll = (amount) =>
+  api.put('/journal/bankroll', { initial_bankroll: amount }).then(r => r.data)
+
 // API quota
 export const getQuota = () => api.get('/market/quota').then(r => r.data)

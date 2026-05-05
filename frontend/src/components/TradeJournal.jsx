@@ -4,6 +4,7 @@ import {
   getTrades, createTrade, updateTrade, deleteTrade,
   getJournalStats, getJournalDetailed, analyzeTrade,
   getLatestAnalysis, exportTradesCSV,
+  getBankroll, setInitialBankroll,
 } from '../services/api'
 
 const STATUS_COLORS = {
@@ -124,26 +125,32 @@ function WeekdayHeatmap({ byWeekday }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function TradeJournal() {
-  const [trades,       setTrades]       = useState([])
-  const [stats,        setStats]        = useState(null)
-  const [detailed,     setDetailed]     = useState(null)
-  const [showForm,     setShowForm]     = useState(false)
-  const [editingTrade, setEditingTrade] = useState(null)
-  const [form,         setForm]         = useState(EMPTY_FORM)
-  const [aiAnalysis,   setAiAnalysis]   = useState({})
-  const [loadingAI,    setLoadingAI]    = useState({})
-  const [loading,      setLoading]      = useState(true)
-  const [activeTab,    setActiveTab]    = useState('trades')
+  const [trades,          setTrades]          = useState([])
+  const [stats,           setStats]           = useState(null)
+  const [detailed,        setDetailed]        = useState(null)
+  const [bankroll,        setBankroll]        = useState(null)
+  const [bankrollInput,   setBankrollInput]   = useState('')
+  const [editingBankroll, setEditingBankroll] = useState(false)
+  const [showForm,        setShowForm]        = useState(false)
+  const [editingTrade,    setEditingTrade]    = useState(null)
+  const [form,            setForm]            = useState(EMPTY_FORM)
+  const [aiAnalysis,      setAiAnalysis]      = useState({})
+  const [loadingAI,       setLoadingAI]       = useState({})
+  const [loading,         setLoading]         = useState(true)
+  const [activeTab,       setActiveTab]       = useState('trades')
   const chartRef      = useRef(null)
   const chartInstance = useRef(null)
 
   const load = async (silent = false) => {
     if (!silent) setLoading(true)
     try {
-      const [t, s, d] = await Promise.all([getTrades(), getJournalStats(), getJournalDetailed()])
+      const [t, s, d, b] = await Promise.all([
+        getTrades(), getJournalStats(), getJournalDetailed(), getBankroll(),
+      ])
       setTrades(t)
       setStats(s)
       setDetailed(d)
+      setBankroll(b)
     } catch (e) { console.error(e) }
     if (!silent) setLoading(false)
   }
@@ -155,10 +162,11 @@ export default function TradeJournal() {
     return () => clearInterval(interval)
   }, [])
 
-  // Bankroll chart
+  // Equity chart (absolute bankroll values)
   useEffect(() => {
     if (!chartRef.current || !stats?.bankroll_history?.length) return
     if (chartInstance.current) { chartInstance.current.remove(); chartInstance.current = null }
+    const initial = bankroll?.initial ?? 1000
     const chart = createChart(chartRef.current, {
       width: chartRef.current.clientWidth,
       height: 160,
@@ -168,13 +176,23 @@ export default function TradeJournal() {
       timeScale: { borderColor: '#253347', timeVisible: true },
     })
     const series = chart.addLineSeries({ color: '#d4a82a', lineWidth: 2, priceLineVisible: false })
-    series.setData(stats.bankroll_history.map(p => ({ time: p.date, value: p.pnl })))
+    series.setData(stats.bankroll_history.map(p => ({ time: p.date, value: Math.round((initial + p.pnl) * 100) / 100 })))
     chart.timeScale().fitContent()
     chartInstance.current = chart
     const onResize = () => { if (chartRef.current) chart.applyOptions({ width: chartRef.current.clientWidth }) }
     window.addEventListener('resize', onResize)
     return () => { window.removeEventListener('resize', onResize); chart.remove() }
-  }, [stats])
+  }, [stats, bankroll])
+
+  const handleSaveBankroll = async () => {
+    const amount = parseFloat(bankrollInput)
+    if (!amount || amount <= 0) return
+    try {
+      const b = await setInitialBankroll(amount)
+      setBankroll(b)
+      setEditingBankroll(false)
+    } catch (e) { console.error(e) }
+  }
 
   const openNewForm = async () => {
     let prefill = { ...EMPTY_FORM }
@@ -477,10 +495,48 @@ export default function TradeJournal() {
             )}
           </div>
 
-          {/* Bankroll chart + basic stats */}
+          {/* Bankroll + equity chart + basic stats */}
           <div className="space-y-4">
+            {/* Bankroll widget */}
+            {bankroll && (
+              <div className="bg-terminal-card border border-terminal-border rounded-lg p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold text-terminal-text-dim uppercase tracking-wider">Bankroll</h3>
+                  {editingBankroll ? (
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        step="1"
+                        value={bankrollInput}
+                        onChange={e => setBankrollInput(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && handleSaveBankroll()}
+                        className="w-24 bg-terminal-bg border border-terminal-border rounded px-2 py-0.5 text-xs text-terminal-base font-mono"
+                        autoFocus
+                      />
+                      <button onClick={handleSaveBankroll} className="text-[10px] text-green-400 hover:text-green-300 px-1">✓</button>
+                      <button onClick={() => setEditingBankroll(false)} className="text-[10px] text-terminal-text-dim hover:text-white px-1">✕</button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => { setBankrollInput(bankroll.initial.toString()); setEditingBankroll(true) }}
+                      className="text-[10px] text-terminal-text-dim hover:text-gold-400 transition-colors"
+                    >
+                      ✎ {bankroll.initial.toFixed(0)}€ initial
+                    </button>
+                  )}
+                </div>
+                <div className="text-2xl font-bold font-mono text-terminal-base leading-tight">
+                  {bankroll.current.toFixed(2)}€
+                </div>
+                <div className={`text-xs font-mono mt-0.5 ${bankroll.variation >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {bankroll.variation >= 0 ? '+' : ''}{bankroll.variation.toFixed(2)}€
+                  <span className="ml-1 opacity-70">({bankroll.pct >= 0 ? '+' : ''}{bankroll.pct}%)</span>
+                </div>
+              </div>
+            )}
+
             <div className="bg-terminal-card border border-terminal-border rounded-lg p-4">
-              <h3 className="text-xs font-semibold text-terminal-text-dim uppercase tracking-wider mb-3">P&L cumulé</h3>
+              <h3 className="text-xs font-semibold text-terminal-text-dim uppercase tracking-wider mb-3">Equity</h3>
               {stats?.bankroll_history?.length > 1 ? (
                 <div ref={chartRef} className="w-full" />
               ) : (

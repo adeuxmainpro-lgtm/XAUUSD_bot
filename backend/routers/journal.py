@@ -7,9 +7,14 @@ from backend.database import (
     get_trades, get_trade_by_id, get_trade_stats,
     get_closed_trades_for_learning,
     get_trade_stats_detailed, export_trades_csv,
+    get_bankroll, set_initial_bankroll,
 )
 
 router = APIRouter(prefix="/api/journal", tags=["journal"])
+
+
+class BankrollUpdate(BaseModel):
+    initial_bankroll: float
 
 
 class TradeCreate(BaseModel):
@@ -44,6 +49,19 @@ class TradeUpdate(BaseModel):
     rsi_at_entry: Optional[float] = None
     trend_at_entry: Optional[str] = None
     confluence_score: Optional[int] = None
+
+
+@router.get("/bankroll")
+def journal_bankroll():
+    return get_bankroll()
+
+
+@router.put("/bankroll")
+def update_bankroll(payload: BankrollUpdate):
+    if payload.initial_bankroll <= 0:
+        raise HTTPException(status_code=400, detail="La bankroll doit être positive")
+    set_initial_bankroll(payload.initial_bankroll)
+    return get_bankroll()
 
 
 @router.get("/trades")

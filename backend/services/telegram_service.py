@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 _COOLDOWN_HOURS = 4
 _last_alert_sent: datetime | None = None
+_last_bankroll_alert: dict = {}
 
 
 async def _send_text(text: str) -> bool:
@@ -42,6 +43,39 @@ async def send_weekly_ml_report() -> bool:
     except Exception as e:
         logger.error(f"send_weekly_ml_report error: {e}")
         return False
+
+
+async def check_bankroll_alerts(bankroll: dict) -> None:
+    """Fire a Telegram alert when bankroll crosses -10% (warning) or +10% (celebration)."""
+    global _last_bankroll_alert
+    now     = datetime.now(timezone.utc)
+    initial = bankroll.get("initial", 1000)
+    current = bankroll.get("current", initial)
+    pct     = bankroll.get("pct", 0)
+
+    if pct <= -10:
+        last = _last_bankroll_alert.get("warning")
+        if last is None or (now - last) > timedelta(hours=6):
+            text = (
+                f"⚠️ *ALERTE BANKROLL*\n"
+                f"Bankroll actuelle : *{current:.2f}€* ({pct:+.1f}%)\n"
+                f"Bankroll initiale : {initial:.2f}€\n"
+                f"Vous avez perdu plus de 10% — réduisez le lot size."
+            )
+            if await _send_text(text):
+                _last_bankroll_alert["warning"] = now
+
+    elif pct >= 10:
+        last = _last_bankroll_alert.get("celebration")
+        if last is None or (now - last) > timedelta(hours=12):
+            text = (
+                f"🎉 *BANKROLL EN HAUSSE !*\n"
+                f"Bankroll actuelle : *{current:.2f}€* ({pct:+.1f}%)\n"
+                f"Bankroll initiale : {initial:.2f}€\n"
+                f"Excellent travail !"
+            )
+            if await _send_text(text):
+                _last_bankroll_alert["celebration"] = now
 
 
 async def send_strong_signal(direction: str, confluence_score: int, price: float | None) -> bool:

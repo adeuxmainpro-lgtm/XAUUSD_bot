@@ -132,6 +132,17 @@ def init_db():
         )
     """)
 
+    # Key-value settings (bankroll, preferences…)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+    cur.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('initial_bankroll', '1000')"
+    )
+
     # Interactive Telegram signal confirmations
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pending_signals (
@@ -699,6 +710,52 @@ def get_latest_sentiment() -> dict | None:
     row = cur.fetchone()
     conn.close()
     return json.loads(row["data"]) if row else None
+
+
+# ─────────────────────────────────────────────
+# SETTINGS / BANKROLL
+# ─────────────────────────────────────────────
+
+def get_setting(key: str, default: str | None = None) -> str | None:
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cur.fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str):
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)", (key, value))
+    conn.commit()
+    conn.close()
+
+
+def get_bankroll() -> dict:
+    initial = float(get_setting("initial_bankroll", "1000") or 1000)
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute(
+        "SELECT COALESCE(SUM(profit_eur), 0) AS total FROM trades WHERE status IN ('WIN','LOSS','BE')"
+    )
+    row = cur.fetchone()
+    conn.close()
+    total_pnl = round(float(row["total"]), 2)
+    current   = round(initial + total_pnl, 2)
+    variation = round(current - initial, 2)
+    pct       = round((variation / initial) * 100, 2) if initial else 0
+    return {
+        "initial":   initial,
+        "current":   current,
+        "variation": variation,
+        "pct":       pct,
+    }
+
+
+def set_initial_bankroll(amount: float):
+    set_setting("initial_bankroll", str(round(amount, 2)))
 
 
 # ─────────────────────────────────────────────
