@@ -222,6 +222,39 @@ async def run_analysis() -> dict:
                 if abs(old_entry - corrected_entry) > 1.0:
                     logger.info(f"Entry corrected {direction}: ${old_entry} → ${corrected_entry} (market: ${current_price})")
 
+            # Post-processing: ATR-based SL/TP validation (SL must be ≥ 0.5× ATR from entry)
+            atr = ctx["market"].get("atr")
+            if atr and direction in ("BUY", "SELL") and rec.get("entry") is not None:
+                _ep = rec["entry"]
+                _sl = rec.get("stop_loss")
+                if _sl and abs(_ep - _sl) < atr * 0.5:
+                    logger.info(f"SL too tight ({abs(_ep-_sl):.2f} < 0.5×ATR {atr*0.5:.2f}): overriding with ATR-based levels")
+                    if direction == "BUY":
+                        rec["stop_loss"]     = round(_ep - atr * 1.5, 2)
+                        rec["take_profit_1"] = round(_ep + atr * 2.0, 2)
+                        rec["take_profit_2"] = round(_ep + atr * 3.0, 2)
+                    else:
+                        rec["stop_loss"]     = round(_ep + atr * 1.5, 2)
+                        rec["take_profit_1"] = round(_ep - atr * 2.0, 2)
+                        rec["take_profit_2"] = round(_ep - atr * 3.0, 2)
+                    rec["risk_reward"] = 2.0
+
+            # Post-processing: EMA200 multi-timeframe filter
+            ema200_filter = ctx.get("ema200_filter", {})
+            _above_4h = ema200_filter.get("above_4h")
+            _above_1h = ema200_filter.get("above_1h")
+            if _above_4h is not None and _above_1h is not None and direction in ("BUY", "SELL"):
+                _expected = (direction == "BUY")
+                if _above_4h != _expected and _above_1h != _expected:
+                    _cur = rec.get("signal_level", "WEAK")
+                    _down = {"STRONG": "MODERATE", "MODERATE": "WEAK", "WEAK": "VERY_WEAK", "VERY_WEAK": "VERY_WEAK"}
+                    _new = _down.get(_cur, "VERY_WEAK")
+                    if _new != _cur:
+                        logger.info(f"EMA200 filter: {direction} against 4H+1H EMA200 → {_cur}→{_new}")
+                        rec["signal_level"] = _new
+                        if rec.get("confidence"):
+                            rec["confidence"] = max(30, rec["confidence"] - 15)
+
             # Post-processing: merge pre-computed SMC/ICT engine fields
             kill_zone       = ctx.get("kill_zone", {})
             mtf             = ctx.get("mtf", {})
@@ -261,13 +294,13 @@ async def run_analysis() -> dict:
                             entry = round(price * 0.9998, 2)
                             rec["entry"]         = entry
                             rec["stop_loss"]     = round(entry - atr * 1.5, 2)
-                            rec["take_profit_1"] = round(entry + atr * 1.5, 2)
+                            rec["take_profit_1"] = round(entry + atr * 2.0, 2)
                             rec["take_profit_2"] = round(entry + atr * 3.0, 2)
                         else:
                             entry = round(price * 1.0002, 2)
                             rec["entry"]         = entry
                             rec["stop_loss"]     = round(entry + atr * 1.5, 2)
-                            rec["take_profit_1"] = round(entry - atr * 1.5, 2)
+                            rec["take_profit_1"] = round(entry - atr * 2.0, 2)
                             rec["take_profit_2"] = round(entry - atr * 3.0, 2)
                         rec["risk_reward"] = 2.0
                 # Restore signal level from pre-computed engine if AI left it as WAIT

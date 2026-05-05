@@ -17,6 +17,16 @@ from backend.services.forex_factory_service import fetch_high_impact_events, is_
 logger = logging.getLogger(__name__)
 
 
+def _compute_ema(closes: list[float], period: int) -> float | None:
+    if len(closes) < period:
+        return None
+    k = 2.0 / (period + 1)
+    ema = sum(closes[:period]) / period
+    for price in closes[period:]:
+        ema = price * k + ema * (1 - k)
+    return ema
+
+
 async def build_market_context() -> dict:
     """Assemble full market context: price, macro, news, patterns, COT, sentiment, trade history."""
     market, macro, fg, new_sources, ff_events, ff_imminent = await asyncio.gather(
@@ -136,6 +146,19 @@ async def build_market_context() -> dict:
     # Trade learning data
     past_trades = get_closed_trades_for_learning(30)
 
+    # EMA200 multi-timeframe filter
+    _price = market.get("price")
+    _closes_4h = [c["close"] for c in ohlc_4h if c.get("close")]
+    _closes_1h = [c["close"] for c in ohlc_1h if c.get("close")]
+    _ema200_4h = _compute_ema(_closes_4h, 200)
+    _ema200_1h = _compute_ema(_closes_1h, 200)
+    ema200_filter = {
+        "ema200_4h": round(_ema200_4h, 2) if _ema200_4h else None,
+        "ema200_1h": round(_ema200_1h, 2) if _ema200_1h else None,
+        "above_4h":  (_price > _ema200_4h) if (_price and _ema200_4h) else None,
+        "above_1h":  (_price > _ema200_1h) if (_price and _ema200_1h) else None,
+    }
+
     return {
         "market":          market,
         "macro":           macro,
@@ -148,6 +171,7 @@ async def build_market_context() -> dict:
         "new_sources":     new_sources,
         "composite":       composite,
         "past_trades":     past_trades,
+        "ema200_filter":   ema200_filter,
         # SMC/ICT engine outputs
         "mtf":             mtf,
         "kill_zone":       kill_zone,
@@ -413,6 +437,24 @@ def format_context_for_prompt(ctx: dict) -> str:
         for d in trade_score_obj.get("details", []):
             lines.append(f"  {d}")
 
+    # ── EMA200 Multi-Timeframe Filter ──
+    ema200_filter = ctx.get("ema200_filter", {})
+    e4h = ema200_filter.get("ema200_4h")
+    e1h = ema200_filter.get("ema200_1h")
+    a4h = ema200_filter.get("above_4h")
+    a1h = ema200_filter.get("above_1h")
+    if e4h or e1h:
+        lines.append(f"\n--- FILTRE EMA200 MULTI-TIMEFRAME ---")
+        if e4h:
+            lines.append(f"EMA200 4H : ${e4h:.2f} → {'HAUSSIER ✅' if a4h else 'BAISSIER ❌'} (prix {'au-dessus' if a4h else 'en-dessous'})")
+        if e1h:
+            lines.append(f"EMA200 1H : ${e1h:.2f} → {'HAUSSIER ✅' if a1h else 'BAISSIER ❌'} (prix {'au-dessus' if a1h else 'en-dessous'})")
+        if a4h is not None and a1h is not None:
+            if a4h == a1h:
+                lines.append(f"✅ Confirmation EMA200 : les 2 TF d'accord → {'BUY' if a4h else 'SELL'}")
+            else:
+                lines.append(f"⚠️ Divergence EMA200 : 4H et 1H ne s'accordent pas — signal affaibli")
+
     # ── Market Regime ──
     if regime:
         r_label = regime.get("label", "?")
@@ -466,34 +508,86 @@ def format_context_for_prompt(ctx: dict) -> str:
 
     # ── Trade learning ──
     if past_trades:
-        wins = [t for t in past_trades if t["status"] == "WIN"]
+        wins   = [t for t in past_trades if t["status"] == "WIN"]
         losses = [t for t in past_trades if t["status"] == "LOSS"]
-        lines.append(f"\n=== HISTORIQUE DE TES TRADES (apprentissage) ===")
-        lines.append(f"Derniers {len(past_trades)} trades: {len(wins)} gagnants / {len(losses)} perdants")
+        wr     = round(len(wins) / len(past_trades) * 100)
 
-        if past_trades:
-            wr = round(len(wins)/len(past_trades)*100)
-            lines.append(f"Win rate global: {wr}%")
+        lines.append(f"\n=== APPRENTISSAGE — HISTORIQUE TRADES ({len(past_trades)} récents) ===")
+        lines.append(f"Bilan : {len(wins)} WIN / {len(losses)} LOSS — Win rate {wr}%")
 
-        buy_trades = [t for t in past_trades if t["direction"] == "BUY"]
-        sell_trades = [t for t in past_trades if t["direction"] == "SELL"]
+        buy_trades  = [t for t in past_trades if t.get("direction") == "BUY"]
+        sell_trades = [t for t in past_trades if t.get("direction") == "SELL"]
+        buy_wr = sell_wr = None
         if buy_trades:
-            buy_wr = round(len([t for t in buy_trades if t["status"]=="WIN"]) / len(buy_trades) * 100)
-            lines.append(f"Win rate BUY: {buy_wr}% ({len(buy_trades)} trades)")
+            buy_wr = round(len([t for t in buy_trades  if t["status"] == "WIN"]) / len(buy_trades)  * 100)
+            lines.append(f"Win rate BUY  : {buy_wr}% ({len(buy_trades)} trades)")
         if sell_trades:
-            sell_wr = round(len([t for t in sell_trades if t["status"]=="WIN"]) / len(sell_trades) * 100)
-            lines.append(f"Win rate SELL: {sell_wr}% ({len(sell_trades)} trades)")
+            sell_wr = round(len([t for t in sell_trades if t["status"] == "WIN"]) / len(sell_trades) * 100)
+            lines.append(f"Win rate SELL : {sell_wr}% ({len(sell_trades)} trades)")
 
-        # RSI patterns at loss
+        # Individual last 10 trades
+        lines.append("\nDerniers trades :")
+        for t in past_trades[:10]:
+            ep      = t.get("entry_price")
+            xp      = t.get("exit_price")
+            pl      = t.get("profit_eur") or 0
+            rsi     = t.get("rsi_at_entry")
+            trend   = t.get("trend_at_entry") or "?"
+            pl_str  = f"+€{pl:.0f}" if pl >= 0 else f"-€{abs(pl):.0f}"
+            ep_str  = f"${ep:.2f}" if ep else "?"
+            xp_str  = f"${xp:.2f}" if xp else "?"
+            rsi_str = f" RSI={rsi:.0f}" if rsi else ""
+            lines.append(f"  {t.get('status','?'):4s} {t.get('direction','?'):4s} {ep_str}→{xp_str} {pl_str}{rsi_str} [{trend}]")
+
+        # RSI range analysis
+        win_rsi  = [t["rsi_at_entry"] for t in wins   if t.get("rsi_at_entry")]
         loss_rsi = [t["rsi_at_entry"] for t in losses if t.get("rsi_at_entry")]
+        if win_rsi:
+            avg_win_rsi  = round(sum(win_rsi) / len(win_rsi))
+            rsi_ok = len([r for r in win_rsi if 40 <= r <= 60])
+            lines.append(f"RSI moyen des WIN  : {avg_win_rsi} ({rsi_ok}/{len(win_rsi)} entre 40-60)")
         if loss_rsi:
-            avg_loss_rsi = sum(loss_rsi) / len(loss_rsi)
-            lines.append(f"RSI moyen lors des pertes: {avg_loss_rsi:.0f}")
-            if avg_loss_rsi > 65:
-                lines.append("⚠️ Historique: les trades en zone survendu/suracheté ont tendance à perdre")
+            avg_loss_rsi = round(sum(loss_rsi) / len(loss_rsi))
+            rsi_ext = len([r for r in loss_rsi if r < 30 or r > 70])
+            lines.append(f"RSI moyen des LOSS : {avg_loss_rsi} ({rsi_ext}/{len(loss_rsi)} en zone extrême)")
 
-        # Recent losses details
-        for t in losses[:3]:
-            lines.append(f"  Perte récente: {t['direction']} entrée ${t.get('entry_price','?')} RSI={t.get('rsi_at_entry','?')} tendance={t.get('trend_at_entry','?')}")
+        # EMA alignment at win vs loss
+        win_trend = [t.get("trend_at_entry") for t in wins if t.get("trend_at_entry")]
+        if win_trend:
+            bull_w = win_trend.count("BULLISH")
+            lines.append(f"EMA alignment WIN : {bull_w}/{len(win_trend)} BULLISH, {len(win_trend)-bull_w}/{len(win_trend)} BEARISH")
+
+        # Consecutive losses streak (recent, same direction)
+        consec_loss = 0
+        consec_dir  = None
+        for t in past_trades:
+            if t["status"] == "LOSS":
+                if consec_dir is None:
+                    consec_dir = t.get("direction")
+                if t.get("direction") == consec_dir:
+                    consec_loss += 1
+                else:
+                    break
+            else:
+                break
+
+        # Natural language summary for Claude
+        notes = []
+        if consec_loss >= 2:
+            notes.append(f"{consec_loss} LOSS consécutifs en {consec_dir} — éviter {consec_dir}")
+        if buy_wr is not None and sell_wr is not None:
+            if buy_wr > sell_wr + 20:
+                notes.append(f"BUY plus performant ({buy_wr}% vs {sell_wr}%)")
+            elif sell_wr > buy_wr + 20:
+                notes.append(f"SELL plus performant ({sell_wr}% vs {buy_wr}%)")
+        if win_rsi and len([r for r in win_rsi if 40 <= r <= 60]) / len(win_rsi) > 0.6:
+            notes.append("WIN arrivent majoritairement avec RSI 40-60")
+        if loss_rsi and len([r for r in loss_rsi if r < 30 or r > 70]) / len(loss_rsi) > 0.5:
+            notes.append("LOSS surviennent souvent en zone RSI extrême (<30 ou >70)")
+
+        if notes:
+            lines.append("⚡ ADAPTATION : " + " | ".join(notes))
+        else:
+            lines.append(f"→ Aucun biais marqué sur les {len(past_trades)} derniers trades")
 
     return "\n".join(lines)

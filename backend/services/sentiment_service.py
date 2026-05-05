@@ -233,16 +233,16 @@ def compute_confluence(
         if len(set(dirs)) == 1:
             add("Alignement triple : patterns + indicateurs + macro", dirs[0], 3)
 
-    total = buy_w + sell_w
-    if total == 0:
+    total_count = buy_count + sell_count
+    if total_count == 0:
         direction = "NEUTRAL"
         score = 50
-    elif buy_w >= sell_w:
+    elif buy_count >= sell_count:
         direction = "BUY"
-        score = round(buy_w / total * 100)
+        score = round(buy_count / total_count * 100)
     else:
         direction = "SELL"
-        score = round(sell_w / total * 100)
+        score = round(sell_count / total_count * 100)
 
     detail_str = f"{buy_count} haussier{'s' if buy_count != 1 else ''} / {sell_count} baissier{'s' if sell_count != 1 else ''}"
 
