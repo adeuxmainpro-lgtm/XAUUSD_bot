@@ -1,6 +1,7 @@
 import sys
 import os
 import logging
+import html as _html
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -394,18 +395,18 @@ async def cmd_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         emoji  = "🟢" if direction == "BUY" else "🔴"
-        justif = summary[:200] if summary else "Contexte analysé."
+        justif = _html.escape(summary[:200] if summary else "Contexte analysé.")
 
         text = (
-            f"{emoji} *SIGNAL XAUUSD — {direction}*\n\n"
+            f"{emoji} <b>SIGNAL XAUUSD — {direction}</b>\n\n"
             f"📍 Entrée : ${entry:.2f}\n"
             f"🛑 Stop Loss : ${sl:.2f}\n"
             f"🎯 TP1 : ${tp1:.2f} | TP2 : ${tp2:.2f}\n"
             f"📊 R/R : 1:{rr} | Confiance : {confidence}%\n"
             f"📈 Confluence : {confluence}% ({signal_level})\n\n"
-            f"💡 _{justif}_\n\n"
+            f"💡 <i>{justif}</i>\n\n"
             f"Voulez-vous ouvrir ce trade dans votre journal ?\n"
-            f"Répondez *OUI* pour ouvrir | *NON* pour annuler _(timeout 30min)_"
+            f"Répondez <b>OUI</b> pour ouvrir | <b>NON</b> pour annuler <i>(timeout 30min)</i>"
         )
 
         chat_id = update.effective_chat.id
@@ -423,7 +424,7 @@ async def cmd_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         save_pending_signal(chat_id, signal_payload, timeout_minutes=30)
 
-        await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+        await msg.edit_text(text, parse_mode=ParseMode.HTML)
         logger.info(f"cmd_trade: {direction} entry=${entry} sent to chat_id={chat_id}")
 
     except Exception as e:
@@ -457,7 +458,6 @@ async def handle_signal_response(update: Update, context: ContextTypes.DEFAULT_T
         if not pending:
             await update.message.reply_text(
                 "ℹ️ Aucun signal en attente (expiré ou déjà traité).",
-                parse_mode=ParseMode.MARKDOWN,
             )
             return
 
@@ -489,20 +489,19 @@ async def handle_signal_response(update: Update, context: ContextTypes.DEFAULT_T
             emoji     = "🟢" if direction == "BUY" else "🔴"
 
             await update.message.reply_text(
-                f"✅ *Trade ouvert dans votre journal !*\n\n"
+                f"✅ <b>Trade ouvert dans votre journal !</b>\n\n"
                 f"{emoji} {direction} XAUUSD — Trade #{trade_id}\n"
                 f"📍 Entrée : ${entry:.2f}\n"
                 f"🛑 SL : ${sl:.2f} | 🎯 TP1 : ${tp1:.2f}\n\n"
-                f"_Le suivi automatique vérifie le prix toutes les 30s._",
-                parse_mode=ParseMode.MARKDOWN,
+                f"<i>Le suivi automatique vérifie le prix toutes les 30s.</i>",
+                parse_mode=ParseMode.HTML,
             )
             logger.info(f"Trade #{trade_id} created via Telegram OUI response (chat_id={chat_id})")
 
         else:  # non / no
             mark_signal_handled(signal_id)
             await update.message.reply_text(
-                "⏭️ *Signal ignoré.* Tapez /trade à tout moment pour relancer une analyse.",
-                parse_mode=ParseMode.MARKDOWN,
+                "⏭️ Signal ignoré. Tapez /trade à tout moment pour relancer une analyse.",
             )
             logger.info(f"Signal {signal_id} ignored via Telegram NON response (chat_id={chat_id})")
 
